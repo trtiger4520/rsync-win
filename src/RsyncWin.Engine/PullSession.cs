@@ -67,26 +67,27 @@ public static class PullSession
     {
         SessionChannel channel = await SessionSetup.OpenAsync(transport, serverArgs, cancellationToken, handshake);
         IReadOnlyList<FileEntry> entries = channel.FileList.Entries;
+        LocalPathPolicy pathPolicy = LocalPathPolicy.Current;
 
         // Map every name before touching the filesystem: one hostile entry anywhere in the list
-        // must abort the session with nothing created. Also note which names the Windows mapper
-        // actually rewrote, for a warn-and-continue report to the caller.
+        // must abort the session with nothing created. Also note which names the active local-path
+        // policy actually rewrote, for a warn-and-continue report to the caller.
         //
-        // WindowsPathMapper is many-to-one (e.g. "a:b" and "a_b" both map to "a_b"; case differs
-        // on case-insensitive NTFS too): a later entry whose mapped path collides with an earlier
-        // one must not clobber it. Flist order is authoritative — the first entry wins, the
+        // A platform mapping can be many-to-one (e.g. Windows maps "a:b" and "a_b" to "a_b" and
+        // compares NTFS names case-insensitively): a later entry whose mapped path collides with an
+        // earlier one must not clobber it. Flist order is authoritative — the first entry wins, the
         // colliding one is excluded from the transfer entirely (never requested downstream), and
         // any descendant of an excluded directory is excluded too, since its mapped path would
         // otherwise land under the wrong (winning) directory rather than a nonexistent one.
         var mappedNames = new List<string>();
         var skipped = new List<(string Name, string Reason)>();
         var excluded = new HashSet<int>();
-        var pathOwners = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var pathOwners = new Dictionary<string, int>(pathPolicy.PathComparer);
         var excludedDirPrefixes = new List<string>();
         for (int ndx = 0; ndx < entries.Count; ndx++)
         {
             FileEntry entry = entries[ndx];
-            string full = LocalPath(destinationDirectory, entry, out bool changed);
+            string full = LocalPath(destinationDirectory, entry, pathPolicy, out bool changed);
             if (changed)
                 mappedNames.Add(entry.Name);
 
@@ -177,14 +178,14 @@ public static class PullSession
             }
             else
             {
-                var keep = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                var keep = new HashSet<string>(pathPolicy.PathComparer);
                 for (int ndx = 0; ndx < entries.Count; ndx++)
                 {
                     if (excluded.Contains(ndx) || entries[ndx].NameBytes is [(byte)'.'])
                         continue;
-                    keep.Add(WindowsPathMapper.Map(entries[ndx].Name).Mapped);
+                    keep.Add(pathPolicy.Map(entries[ndx].Name).Mapped);
                 }
-                prune = LocalTreePruner.Prune(destinationDirectory, keep, serverArgs.Recurse);
+                prune = LocalTreePruner.Prune(destinationDirectory, keep, serverArgs.Recurse, pathPolicy);
             }
         }
 
@@ -207,17 +208,22 @@ public static class PullSession
     }
 
     /// <summary>
-    /// Maps a wire name under the destination. <see cref="FileListReader"/> enforced the Unix-side
-    /// rules (no leading '/', no '..' components split on '/'), but '\' and ':' are path syntax
-    /// only on Windows — <c>..\evil</c> or <c>C:evil</c> passes that validation and still escapes
-    /// through <see cref="Path.Combine(string[])"/>. <see cref="WindowsPathMapper"/> sanitizes each
-    /// segment; the containment check below is kept regardless, as the real backstop against a
-    /// mapper bug (or a bare ".." that reached here despite the reader's rejection).
+    /// Maps a wire name under the destination. <see cref="FileListReader"/> enforced the wire-side
+    /// rules (no leading '/', no '..' components split on '/'); the active local path policy then
+    /// applies platform-specific name and comparison rules. The containment check remains the real
+    /// backstop against a mapper bug or a bare ".." that reached here despite reader validation.
     /// </summary>
     internal static string LocalPath(string destination, FileEntry entry) =>
-        LocalPath(destination, entry, out _);
+        LocalPath(destination, entry, LocalPathPolicy.Current, out _);
 
     internal static string LocalPath(string destination, FileEntry entry, out bool changed)
+        => LocalPath(destination, entry, LocalPathPolicy.Current, out changed);
+
+    internal static string LocalPath(
+        string destination,
+        FileEntry entry,
+        LocalPathPolicy policy,
+        out bool changed)
     {
         if (entry.NameBytes is [(byte)'.'])
         {
@@ -226,13 +232,13 @@ public static class PullSession
         }
 
         string name = entry.Name;
-        (string mapped, changed) = WindowsPathMapper.Map(name);
+        (string mapped, changed) = policy.Map(name);
 
         string full = Path.GetFullPath(Path.Combine(destination, mapped));
         string root = Path.GetFullPath(destination);
         if (!Path.EndsInDirectorySeparator(root))
             root += Path.DirectorySeparatorChar;
-        if (!full.StartsWith(root, StringComparison.OrdinalIgnoreCase))
+        if (!full.StartsWith(root, policy.PathComparison))
             throw new ProtocolException(RsyncExitCode.UnsupportedAction,
                 $"refusing server-sent name that escapes the destination: \"{name}\"");
         return full;

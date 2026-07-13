@@ -15,6 +15,16 @@ public class ProcessTransportPlumbingTests
 {
     private static string CmdExe => Path.Combine(Environment.SystemDirectory, "cmd.exe");
 
+    [Fact]
+    public void DefaultSshExePath_UsesThePlatformConvention()
+    {
+        string expected = OperatingSystem.IsWindows()
+            ? Path.Combine(Environment.SystemDirectory, "OpenSSH", "ssh.exe")
+            : "ssh";
+
+        Assert.Equal(expected, OpenSshProcessTransport.DefaultSshExePath);
+    }
+
     private static async Task<byte[]> DrainAsync(PipeReader reader, CancellationToken cancellationToken)
     {
         var all = new MemoryStream();

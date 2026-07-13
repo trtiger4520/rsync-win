@@ -18,6 +18,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\RsyncWin.Engine\RsyncWin.Engine.csproj" />
+    <ProjectReference Include="..\..\src\RsyncWin.Cli\RsyncWin.Cli.csproj" ReferenceOutputAssembly="false" />
   </ItemGroup>
 
   <ItemGroup>

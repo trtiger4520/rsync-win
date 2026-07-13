@@ -1,0 +1,12 @@
+.git
+.agents
+.claude
+.codex
+.vs
+**/bin
+**/obj
+artifacts
+TestResults
+test-fixtures
+tests
+docs

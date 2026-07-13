@@ -1,0 +1,17 @@
+{
+  "capturedLocal": "2026-07-12T12:56:37+08:00",
+  "gitBaseCommit": "9db9f842cb77438287800512c60b6e119cbcacf1",
+  "os": "Microsoft Windows 10.0.26200",
+  "architecture": "x64",
+  "logicalProcessorCount": 24,
+  "processorIdentifier": "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel",
+  "dotnetSdk": "10.0.301",
+  "dotnetRuntime": "10.0.9",
+  "dockerServer": "29.6.1",
+  "dockerClient": "29.6.1",
+  "freeBytesBeforeFullDatasetVerification": 196322127872,
+  "rsyncPeer": "3.4.3-r0",
+  "rsyncBaseImage": "alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d",
+  "rsyncWinSdkImage": "mcr.microsoft.com/dotnet/sdk:10.0-alpine@sha256:940f919ae84dd92ccd4aab7686fa5b777870b006c9360351039e16bcaad73d89",
+  "rsyncWinRuntimeImage": "mcr.microsoft.com/dotnet/runtime:10.0-alpine@sha256:036b39f319141abc97fb32652ecfa97294e8108840f807999a0d467f4f1118ab"
+}

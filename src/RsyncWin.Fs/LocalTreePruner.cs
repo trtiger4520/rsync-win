@@ -35,10 +35,9 @@ public static class LocalTreePruner
 
     /// <summary>
     /// Enumerates the children of <paramref name="destRoot"/> (the transfer root itself is never a
-    /// deletion candidate) and deletes every entry whose dest-relative, '\'-joined path is not in
-    /// <paramref name="keepRelativePaths"/>. Comparison is <see cref="StringComparer.OrdinalIgnoreCase"/>
-    /// because NTFS is case-insensitive: an entry that only case-differs from a kept path is the same
-    /// on-disk file and must be kept, since an over-eager delete is the dangerous failure mode.
+    /// deletion candidate) and deletes every entry whose destination-relative path is not in
+    /// <paramref name="keepRelativePaths"/>. Path separators and comparison semantics follow the
+    /// current platform policy.
     /// <para>
     /// A directory reparse point (junction or directory symlink) is never walked into — deleting the
     /// contents of a junction target could destroy data outside the tree — so an extraneous one is
@@ -50,12 +49,24 @@ public static class LocalTreePruner
     /// </para>
     /// </summary>
     public static PruneResult Prune(string destRoot, IReadOnlySet<string> keepRelativePaths, bool recurse)
+        => Prune(destRoot, keepRelativePaths, recurse, LocalPathPolicy.Current);
+
+    /// <summary>
+    /// Applies the prune using an explicit local path policy. This overload is primarily useful for
+    /// deterministic platform-policy tests; production callers normally use the runtime overload.
+    /// </summary>
+    internal static PruneResult Prune(
+        string destRoot,
+        IReadOnlySet<string> keepRelativePaths,
+        bool recurse,
+        LocalPathPolicy policy)
     {
         string root = Path.GetFullPath(destRoot);
+        var keep = new HashSet<string>(keepRelativePaths, policy.PathComparer);
         var paths = new List<string>();
         var counters = new Counters();
 
-        Walk(root, root, relativePrefix: "", keepRelativePaths, recurse, forceDelete: false, paths, counters);
+        Walk(root, root, relativePrefix: "", keep, recurse, forceDelete: false, paths, counters, policy);
 
         return new PruneResult(paths, counters.Files, counters.Dirs, counters.Symlinks, counters.Devices, counters.Specials);
     }
@@ -73,12 +84,15 @@ public static class LocalTreePruner
         bool recurse,
         bool forceDelete,
         List<string> paths,
-        Counters counters)
+        Counters counters,
+        LocalPathPolicy policy)
     {
         foreach (string childPath in Directory.EnumerateFileSystemEntries(directoryPath))
         {
             string childName = Path.GetFileName(childPath);
-            string relativeName = relativePrefix.Length == 0 ? childName : $"{relativePrefix}\\{childName}";
+            string relativeName = relativePrefix.Length == 0
+                ? childName
+                : $"{relativePrefix}{policy.DirectorySeparator}{childName}";
 
             FileAttributes attributes = File.GetAttributes(childPath);
             bool isReparsePoint = (attributes & FileAttributes.ReparsePoint) != 0;
@@ -90,7 +104,7 @@ public static class LocalTreePruner
                 // Only descend into a kept directory's children when recursing; a kept file or
                 // reparse point needs no further action either way.
                 if (isDirectory && recurse)
-                    Walk(root, childPath, relativeName, keepRelativePaths, recurse, forceDelete: false, paths, counters);
+                    Walk(root, childPath, relativeName, keepRelativePaths, recurse, forceDelete: false, paths, counters, policy);
                 continue;
             }
 
@@ -99,32 +113,37 @@ public static class LocalTreePruner
             // extraneous junction/dir-symlink is deleted as a single symlink entry.
             if (isDirectory)
             {
-                Walk(root, childPath, relativeName, keepRelativePaths, recurse, forceDelete: true, paths, counters);
-                DeleteEntry(root, childPath, attributes, isDirectory: true);
+                Walk(root, childPath, relativeName, keepRelativePaths, recurse, forceDelete: true, paths, counters, policy);
+                DeleteEntry(root, childPath, attributes, isDirectory: true, policy);
                 paths.Add(childPath);
                 counters.Dirs++;
             }
             else if (isReparsePoint)
             {
-                DeleteEntry(root, childPath, attributes, isDirectory: (attributes & FileAttributes.Directory) != 0);
+                DeleteEntry(root, childPath, attributes, isDirectory: (attributes & FileAttributes.Directory) != 0, policy);
                 paths.Add(childPath);
                 counters.Symlinks++;
             }
             else
             {
-                DeleteEntry(root, childPath, attributes, isDirectory: false);
+                DeleteEntry(root, childPath, attributes, isDirectory: false, policy);
                 paths.Add(childPath);
                 counters.Files++;
             }
         }
     }
 
-    private static void DeleteEntry(string root, string path, FileAttributes attributes, bool isDirectory)
+    private static void DeleteEntry(
+        string root,
+        string path,
+        FileAttributes attributes,
+        bool isDirectory,
+        LocalPathPolicy policy)
     {
         // Containment defense-in-depth: enumeration already guarantees this, but a mapper/walk bug
         // must never be the last line of defense (WindowsPathMapper's doc note applies here too).
         string fullPath = Path.GetFullPath(path);
-        if (!fullPath.StartsWith(root, StringComparison.OrdinalIgnoreCase)
+        if (!fullPath.StartsWith(root, policy.PathComparison)
             || (fullPath.Length > root.Length && fullPath[root.Length] != Path.DirectorySeparatorChar))
         {
             throw new InvalidOperationException($"Refusing to delete '{fullPath}': outside destination root '{root}'");

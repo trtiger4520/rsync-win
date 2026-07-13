@@ -1,5 +1,6 @@
 using System.Text;
 using RsyncWin.Engine;
+using RsyncWin.Fs;
 using RsyncWin.Protocol.FileList;
 using RsyncWin.Protocol.Session;
 
@@ -54,6 +55,31 @@ public class PullSessionPathSafetyTests
             PullSession.LocalPath(@"C:\dest", Regular("subdir/nested.txt")));
         Assert.Equal(@"C:\dest\b005 name with space.txt",
             PullSession.LocalPath(@"C:\dest\", Regular("b005 name with space.txt")));
+    }
+
+    [Fact]
+    public void ExplicitUnixPolicy_DoesNotSanitizeLegalUnixNames()
+    {
+        string destination = Path.Combine(Path.GetTempPath(), "rsyncwin-unix-policy");
+        string expected = Path.GetFullPath(Path.Combine(destination, "CON:a\\b"));
+
+        string actual = PullSession.LocalPath(
+            destination, Regular("CON:a\\b"), LocalPathPolicy.Unix, out bool changed);
+
+        Assert.Equal(expected, actual);
+        Assert.False(changed);
+    }
+
+    [Fact]
+    public void ExplicitUnixPolicy_StillRejectsDestinationTraversal()
+    {
+        string destination = Path.Combine(Path.GetTempPath(), "rsyncwin-unix-policy");
+
+        var exception = Assert.Throws<ProtocolException>(
+            () => PullSession.LocalPath(
+                destination, Regular("../evil.txt"), LocalPathPolicy.Unix, out _));
+
+        Assert.Equal(RsyncExitCode.UnsupportedAction, exception.ExitCode);
     }
 
     [Theory]

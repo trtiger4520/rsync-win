@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>rsyncwin-perf</AssemblyName>
+    <RootNamespace>RsyncWin.Perf</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\RsyncWin.Protocol\RsyncWin.Protocol.csproj" />
+  </ItemGroup>
+
+</Project>

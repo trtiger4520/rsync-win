@@ -25,8 +25,10 @@
 | P8 | Daemon transport (`rsync://`) | **DONE** | `P8 complete` commit — preamble byte-identical to captured client (greeting/auth/argv) across 10 daemon vectors; auth digest recipe computationally reproduced (md5, proto 31 and 29); post-OK stream `cmp`-identical to ssh minus version ints; 13 hermetic daemon replays + live gates 8/8 (anon+auth pull, module listing, push byte-identical, re-push transfers nothing, @ERROR/readonly exit codes); 4 adversarial findings fixed |
 | P9 | Polish (`--checksum`, `--delete` pull, flag surface, exit codes) | **DONE** | `P9 complete` commit — `--checksum` flist F_SUM capture-pinned (`ssh31-pull-checksum`: 16B xxh128, unseeded, regular-files-only, last field) + generator decision 0x0008/0x8002/0xA002 (hermetic byte-exact c2s replay + decision unit tests + live attribute-only/content-change gates); `--delete` pull is **local-only** (`ssh31-pull-delete`: zero wire del-stats either direction) via `LocalTreePruner` (reparse-point-safe, io_error-suppressed incl. mid-session `MSG_IO_ERROR`); drive-letter/UNC disambiguation, `-c`/`--delete`/long-form/unknown-flag handling, exit-code completeness 0/2/3/4/5/10/11/12/23/24/30 + ssh-255-before-12 ordering fix (`ExitCodeMapper`, one test per code); 394 hermetic + 23 live interop green; adversarial review found no code bugs, 2 test-strength gaps closed |
 | P10 | Compression (`-z`) + `--secluded-args` + push `--checksum`/`--delete` | **DONE** | `P10 complete` commit — `--secluded-args` pre-version NUL arg-list byte-exact (`ssh31-secluded-*`); push `--checksum` F_SUM emission (write→read round-trip + live re-push-nothing) and push `--delete` via MSG_DELETED tag 0x6c (no del-stats, empty filter list added), both live-gated; **`-z` zlibx** codec (forced `--new-compress`, no zstd/zlib) — decoder capture-pinned byte-exact against `ssh31-pull-z-{zlibx,delta}`, encoder↔decoder round-trip, both directions live byte-identical + re-transfers-nothing; 402 hermetic + interop green; adversarial review clean |
+| P11 | Application integrity, performance, and Linux image evaluation | **BLOCKED** | Correctness gates pass (426 hermetic, 6 process-level application, existing live interop, Linux image smoke, full deterministic datasets); after two perf repair cycles the fair Linux runner still fails before client start on Windows bind-mount parsing, and Windows smoke still lacks peak RSS and literal/matched evidence |
 
-**Development complete.** P0–P10 all DONE. The client does pull and push over ssh.exe and the rsync
+**Core feature development complete.** P0–P10 are DONE; P11 evaluates the completed surface rather
+than adding rsync wire features. The client does pull and push over ssh.exe and the rsync
 daemon, with delta transfers, `--checksum`, `--delete`, `--secluded-args`, and `-z` (zlibx)
 compression, interoperating byte-for-byte with stock rsync 3.4.3. Scoped-out-by-design items (each
 with a written rationale): protocol 27/29 flist decode, `zstd`/`lz4`/old-`zlib` compression (BCL has
@@ -187,6 +189,50 @@ FileListWriter F_SUM emission / a server-side del-stats read plus their own capt
       `--delete` reports deletions via **MSG_DELETED** (tag 0x6c, no del-stats block on a default push)
       and adds the empty filter list to c2s (capture `ssh31-push-delete`). Both live-gated. The
       `--delete-after`/`--stats` del-stats varint block stays uncaptured/deferred (never sent by us).
+
+## P11 — Application integrity, performance, and Linux image evaluation
+
+Goal: prove the supported RsyncWin CLI surface end-to-end, quantify resource use against stock
+rsync under reproducible conditions, and determine how far the current .NET implementation runs on
+Linux without widening the protocol scope.
+
+Contract:
+- [x] **Process-level application matrix** — spawn the built `rsyncwin` CLI against real rsync over
+      SSH and daemon transports. Cover pull/push, module listing/auth, `-r`/`-t`, pull `-a`,
+      `-c`, `--delete`, `-s`/`--protect-args`, `-z`, `-e`, URL/double-colon daemon syntax, critical
+      combined flags, exact failure exits, and a transfer-nothing re-run. Every case has a timeout;
+      success is exit 0 plus path/type/size/SHA-256/mtime manifest equality.
+- [x] **Deterministic stress harness** — fixed seed `0x5253594E4357494E` generates: 100,000 × 4 KiB
+      small files; 8 × 1 GiB large files; 20,000 mixed files totalling approximately 8 GiB; a 1 GiB
+      basis with deterministic 1% block edits; and 2 GiB each of compressible/incompressible data.
+      Data is generated per scenario under `artifacts/` and removed before the next scenario so peak
+      workspace use remains below 30 GiB.
+- [ ] **Measurement contract** — one warm-up plus five measured iterations, alternating client
+      order. Record each raw iteration and median/p95 for elapsed time, logical MiB/s, CPU time,
+      peak working set/RSS, container cgroup CPU/memory/I/O, literal/matched bytes, exit code, and
+      result manifest. Full copy, up-to-date, delta, checksum, compression, and delete are measured;
+      SSH is a representative mixed-tree result while the full matrix uses daemon transport.
+- [ ] **Fair and practical tracks** — the fair ratio uses the RsyncWin Linux image and stock rsync
+      3.4.3 client against the same daemon, network, volumes, warm-cache policy, 4 CPUs, and 8 GiB
+      memory. Windows Release measurements against Docker SSH/daemon are reported separately as
+      practical absolute results and are never mixed into the fair ratio.
+- [x] **Linux daemon-only image PoC** — runtime-selected local path policy keeps Windows sanitizing
+      and case-insensitive collision rules while Linux uses native separators and ordinal
+      case-sensitive names. Build a non-root .NET 10 image and gate module listing, pull, push,
+      checksum, delete, compression, and a zero-transfer re-run against a real daemon. Linux SSH is
+      assessed but is not a support promise.
+- [ ] **Evidence and report** — preserve `docs/acceptance-report.md` as the P0–P10 snapshot. Commit
+      compact JSON/CSV/SVG evidence and `docs/integrity-evaluation.md`, including environment,
+      versions, supported/out-of-scope matrix, commands, failures, performance interpretation,
+      bottlenecks, and separate compile/start/transfer/platform-semantics conclusions.
+
+No new wire capture is planned: P11 does not change protocol bytes. If a live test finds a wire
+discrepancy, stop that dependent task and run a decisive Docker capture before changing any codec.
+
+Current blocker evidence is recorded in `docs/integrity-evaluation.md`. Do not mark the measurement,
+fair/practical-track, or final-report checkboxes complete until the fair runner starts both clients,
+five manifest-verified full iterations exist per cell, and Windows RSS/literal/matched fields are
+observed rather than zero/null.
 
 ## Standing constraints (do not relax)
 

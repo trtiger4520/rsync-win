@@ -1,0 +1,7 @@
+scenario,client,operation,measured_iterations,exit0,manifest_verified,elapsed_ms,logical_mib_per_second,cpu_ms,peak_working_set_bytes,literal_bytes,matched_bytes,status
+small-files,rsyncwin,full-copy,1,1,true,1260.2542,0.3967453550,328.125,0,,,PARTIAL_METRICS
+small-files,rsyncwin,up-to-date,1,1,true,966.0347,0.5175797515,171.875,0,,,PARTIAL_METRICS
+small-files,rsyncwin,delta,1,1,true,1003.2894,0.4983606923,203.125,0,,,PARTIAL_METRICS
+small-files,rsyncwin,checksum,1,1,true,1202.4484,0.4158182588,281.25,0,,,PARTIAL_METRICS
+small-files,rsyncwin,compression,1,1,true,1410.0849,0.3545885783,406.25,0,,,PARTIAL_METRICS
+small-files,rsyncwin,delete,1,1,true,1039.2395,0.4811210505,187.5,0,,,PARTIAL_METRICS

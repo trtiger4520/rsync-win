@@ -12,4 +12,7 @@
     <Project Path="tests/RsyncWin.Interop.Tests/RsyncWin.Interop.Tests.csproj" />
     <Project Path="tests/RsyncWin.Protocol.Tests/RsyncWin.Protocol.Tests.csproj" />
   </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/RsyncWin.Perf/RsyncWin.Perf.csproj" />
+  </Folder>
 </Solution>

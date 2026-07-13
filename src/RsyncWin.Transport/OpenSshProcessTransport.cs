@@ -32,9 +32,11 @@ public sealed class OpenSshProcessTransport : IRsyncTransport
     private static readonly TimeSpan PoliteExitGrace = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan StderrGrace = TimeSpan.FromSeconds(2);
 
-    /// <summary>The in-box Windows OpenSSH client.</summary>
+    /// <summary>The platform OpenSSH client: the in-box binary on Windows, or <c>ssh</c> from PATH elsewhere.</summary>
     public static string DefaultSshExePath =>
-        Path.Combine(Environment.SystemDirectory, "OpenSSH", "ssh.exe");
+        OperatingSystem.IsWindows()
+            ? Path.Combine(Environment.SystemDirectory, "OpenSSH", "ssh.exe")
+            : "ssh";
 
     private readonly Process _process;
     // pauseWriterThreshold 0 = never apply backpressure: the drain loop must never block, or the

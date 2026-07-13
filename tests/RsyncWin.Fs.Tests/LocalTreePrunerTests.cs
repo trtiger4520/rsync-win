@@ -66,6 +66,49 @@ public class LocalTreePrunerTests
     }
 
     [Fact]
+    public void ExplicitUnixPolicy_UsesCaseSensitiveKeepComparison()
+    {
+        string root = CreateTempDir();
+        try
+        {
+            string lowerCasePath = Path.Combine(root, "foo.txt");
+            File.WriteAllText(lowerCasePath, "hi");
+
+            IReadOnlySet<string> keep = new HashSet<string> { "Foo.txt" };
+            PruneResult result = LocalTreePruner.Prune(root, keep, recurse: true, LocalPathPolicy.Unix);
+
+            Assert.False(File.Exists(lowerCasePath));
+            Assert.Equal(1, result.DeletedRegularFiles);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ExplicitUnixPolicy_UsesSlashForNestedKeepPaths()
+    {
+        string root = CreateTempDir();
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(root, "dir"));
+            string nestedPath = Path.Combine(root, "dir", "nested.txt");
+            File.WriteAllText(nestedPath, "hi");
+
+            IReadOnlySet<string> keep = new HashSet<string> { "dir", "dir/nested.txt" };
+            PruneResult result = LocalTreePruner.Prune(root, keep, recurse: true, LocalPathPolicy.Unix);
+
+            Assert.True(File.Exists(nestedPath));
+            Assert.Empty(result.DeletedPaths);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void ReadOnlyExtraneousFile_IsDeleted()
     {
         string root = CreateTempDir();

@@ -64,4 +64,40 @@ public class WindowsPathMapperTests
         Assert.Equal(@"subdir\nested.txt", mapped);
         Assert.False(changed);
     }
+
+    [Fact]
+    public void WindowsPolicy_PreservesWindowsMappingAndComparisonSemantics()
+    {
+        (string mapped, bool changed) = LocalPathPolicy.Windows.Map("CON/a:b");
+
+        Assert.Equal(@"CON_\a_b", mapped);
+        Assert.True(changed);
+        Assert.Equal('\\', LocalPathPolicy.Windows.DirectorySeparator);
+        Assert.True(LocalPathPolicy.Windows.PathComparer.Equals("File.txt", "file.txt"));
+    }
+
+    [Fact]
+    public void UnixPolicy_PreservesLegalUnixNamesAndUsesOrdinalComparison()
+    {
+        const string name = "CON/a:b/name. /back\\slash";
+
+        (string mapped, bool changed) = LocalPathPolicy.Unix.Map(name);
+
+        Assert.Equal(name, mapped);
+        Assert.False(changed);
+        Assert.Equal('/', LocalPathPolicy.Unix.DirectorySeparator);
+        Assert.False(LocalPathPolicy.Unix.PathComparer.Equals("File.txt", "file.txt"));
+    }
+
+    [Fact]
+    public void PlatformPolicies_ApplyDifferentCollisionRulesDeterministically()
+    {
+        string windowsFirst = LocalPathPolicy.Windows.Map("a:b").Mapped;
+        string windowsSecond = LocalPathPolicy.Windows.Map("a_b").Mapped;
+        string unixFirst = LocalPathPolicy.Unix.Map("a:b").Mapped;
+        string unixSecond = LocalPathPolicy.Unix.Map("a_b").Mapped;
+
+        Assert.True(LocalPathPolicy.Windows.PathComparer.Equals(windowsFirst, windowsSecond));
+        Assert.False(LocalPathPolicy.Unix.PathComparer.Equals(unixFirst, unixSecond));
+    }
 }

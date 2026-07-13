@@ -4,4 +4,10 @@
     <ProjectReference Include="..\RsyncWin.Protocol\RsyncWin.Protocol.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="RsyncWin.Engine" />
+    <InternalsVisibleTo Include="RsyncWin.Fs.Tests" />
+    <InternalsVisibleTo Include="RsyncWin.Interop.Tests" />
+  </ItemGroup>
+
 </Project>
