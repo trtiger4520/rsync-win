@@ -93,19 +93,44 @@ Do not reconstruct `s2length` from memory. A hand-derivation of the `sum_sizes_s
 1 where the real rsync prints 2. Take the formula from openrsync and validate it against captured
 vectors across a spread of file sizes.
 
-## Handshake order (corrected)
+## Handshake order (MEASURED — confirmed against captured bytes)
 
-The obvious-looking order is **wrong**. Verified against rsync's `compat.c`, `setup_protocol()` runs:
+Confirmed byte-for-byte in `vectors/ssh31-pull-rt/{c2s,s2c}.bin` (rsync 3.4.3, `--protocol=31`):
 
-1. version exchange → session uses `min(local, remote)`
-2. **`compat_flags`** (varint) — protocol ≥ 30
-3. **`negotiate_the_strings()`** — vstring exchange for checksum / compression / auth
-4. **`checksum_seed`** (4-byte int) — written **LAST**
+| direction | bytes | meaning |
+|---|---|---|
+| c2s | `1f 00 00 00` | client version **31** (capped by `--protocol=31`) |
+| s2c | `20 00 00 00` | server version **32** (always advertises its max) |
+| s2c | `81 fe` | **compat_flags varint — server→client only** |
+| c2s | `19` + `xxh128 xxh3 xxh64 md5 md4` | client checksum-choice vstring (1 len byte + ASCII) |
+| s2c | `1e` + `xxh128 xxh3 xxh64 md5 md4 none` | server checksum-choice vstring |
+| s2c | `3f 93 4d 6a` | **checksum_seed — LAST**, 4-byte LE int |
+| both | `xx xx xx 07` … | multiplexing on; first frames follow immediately |
 
-Reading the seed before negotiation consumes the first bytes of the compat_flags varint instead, and
-every subsequent read is desynced → exit 12 on the very first milestone.
+1. version exchange → session uses `min(local, remote)` — client with `--protocol=31` advertises 31,
+   *not* its native max.
+2. `compat_flags` varint — **written by the server only**, read by the client (protocol ≥ 30).
+3. `negotiate_the_strings()` — checksum vstrings both ways. No compression string appears when `-z`
+   is not requested. Vstring = 1 length byte (values < 0x80) + ASCII.
+4. `checksum_seed` — 4-byte LE int, server→client, **after** negotiation.
 
-Multiplexing is **not** active during this prologue.
+Reading the seed before negotiation consumes the compat_flags varint instead, and every subsequent
+read is desynced → exit 12. Multiplexing is **not** active during this prologue.
+
+`81 fe` decodes to **510** under the `[0x80 | hi][lo]` two-byte varint form = all compat bits except
+`CF_INC_RECURSE` (bit 0) — the server honored `--no-inc-recursive`, and bit 8 (`CF_ID0_NAMES` = 256,
+rsync ≥ 3.2.7) exists beyond the classic 8 flags. Assert `CF_INC_RECURSE` clear post-handshake.
+
+## Multiplex directionality (MEASURED — answers the P0-2 open question)
+
+- **Protocol 31**: BOTH directions multiplexed. The client's very first post-vstring write is already
+  a frame: `04 00 00 07` (len 4, MSG_DATA) wrapping `00 00 00 00` — the empty exclude-list terminator.
+  This also confirms the **exclude-list send phase happens right after the handshake, before flist**.
+- **Protocol 29**: client→server is **raw** (exclude-list int with no framing); server→client is
+  multiplexed from right after the seed (`ce 00 00 07` immediately follows). At proto 29 the order is
+  simply version → seed, no compat flags, no vstrings.
+- The final c2s frame of a proto-31 session is MSG_DATA wrapping a single `00` byte — consistent with
+  `write_ndx(NDX_DONE)` encoding NDX_DONE as one zero byte.
 
 ## Traps worth re-reading before touching the relevant layer
 
