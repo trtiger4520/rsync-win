@@ -9,6 +9,7 @@ namespace RsyncWin.Interop.Tests;
 /// Flist order is authoritative (CLAUDE.md), so the first entry must win and the later, colliding
 /// one must be excluded from the transfer entirely rather than silently clobbering the winner.
 /// </summary>
+[Trait("Category", "WindowsFs")]
 public class PullSessionCollisionTests
 {
     [Fact]

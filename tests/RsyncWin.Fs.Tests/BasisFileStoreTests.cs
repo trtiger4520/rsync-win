@@ -4,6 +4,7 @@ using RsyncWin.Fs;
 namespace RsyncWin.Fs.Tests;
 
 /// <summary>Hermetic unit tests for <see cref="BasisFileStore"/>.</summary>
+[Trait("Category", "WindowsFs")]
 public class BasisFileStoreTests
 {
     [Fact]
@@ -30,6 +31,7 @@ public class BasisFileStoreTests
             Assert.NotNull(stream);
             Assert.True(stream!.CanRead);
             Assert.True(stream.CanSeek);
+            Assert.False(stream.CanWrite);
 
             using MemoryStream buffer = new();
             stream.CopyTo(buffer);
@@ -131,6 +133,21 @@ public class BasisFileStoreTests
         {
             File.Delete(temp);
             Directory.Delete(dir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void DirectoryPath_ReturnsNullInsteadOfEscapingTheSession()
+    {
+        string directory = Path.Combine(Path.GetTempPath(), $"rsyncwin-basis-dir-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            Assert.Null(BasisFileStore.Open(directory));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
         }
     }
 }

@@ -3,6 +3,7 @@ using RsyncWin.Fs;
 namespace RsyncWin.Fs.Tests;
 
 /// <summary>Hermetic unit tests for the pure <see cref="WindowsPathMapper"/> sanitizer.</summary>
+[Trait("Category", "WindowsFs")]
 public class WindowsPathMapperTests
 {
     [Theory]
@@ -99,5 +100,57 @@ public class WindowsPathMapperTests
 
         Assert.True(LocalPathPolicy.Windows.PathComparer.Equals(windowsFirst, windowsSecond));
         Assert.False(LocalPathPolicy.Unix.PathComparer.Equals(unixFirst, unixSecond));
+    }
+
+    [Theory]
+    [InlineData("PRN")]
+    [InlineData("AUX")]
+    [InlineData("COM1")]
+    [InlineData("COM9")]
+    [InlineData("LPT1")]
+    [InlineData("LPT9")]
+    [InlineData("con.log.backup")]
+    [InlineData("nUl.txt")]
+    public void EveryReservedDeviceBase_IsMappedToANameThatIsNotReserved(string name)
+    {
+        (string mapped, bool changed) = WindowsPathMapper.Map(name);
+
+        Assert.True(changed);
+        Assert.DoesNotContain(mapped.Split('\\'), segment =>
+            segment.Equals(name.Split('.')[0], StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(mapped, WindowsPathMapper.Map(mapped).Mapped);
+    }
+
+    [Theory]
+    [InlineData("name\u0000", "name_")]
+    [InlineData("name\u001f", "name_")]
+    [InlineData("a*b", "a_b")]
+    [InlineData("a?b", "a_b")]
+    [InlineData("a\"b", "a_b")]
+    [InlineData("a<b", "a_b")]
+    [InlineData("a>b", "a_b")]
+    [InlineData("a|b", "a_b")]
+    public void InvalidWindowsCharacters_AreReplaced(string name, string expected)
+    {
+        Assert.Equal(expected, WindowsPathMapper.Map(name).Mapped);
+    }
+
+    [Fact]
+    public void EmptySegments_AreMadeIntoOrdinarySafeNames()
+    {
+        (string mapped, bool changed) = WindowsPathMapper.Map("a//b");
+
+        Assert.Equal(@"a\_\b", mapped);
+        Assert.True(changed);
+        Assert.Equal(mapped, WindowsPathMapper.Map("a/_/b").Mapped);
+    }
+
+    [Fact]
+    public void NavigationTokensRemainVisibleToTheContainmentBackstop()
+    {
+        (string mapped, bool changed) = WindowsPathMapper.Map("../outside");
+
+        Assert.Equal(@"..\outside", mapped);
+        Assert.False(changed);
     }
 }

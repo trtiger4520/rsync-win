@@ -14,6 +14,7 @@ namespace RsyncWin.Interop.Tests;
 /// <see cref="PullSession"/>. The capture negotiated xxh128, so the replay offers it too and every
 /// whole-file trailer is genuinely verified — a checksum bug fails these tests, not just interop.
 /// </summary>
+[Trait("Category", "WindowsFs")]
 public class PullSessionReplayTests
 {
     private static readonly HandshakeOptions Xxh128 = new() { ChecksumOffer = "xxh128" };

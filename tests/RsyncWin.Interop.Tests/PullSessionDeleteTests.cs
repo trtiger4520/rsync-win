@@ -10,6 +10,7 @@ namespace RsyncWin.Interop.Tests;
 /// verified byte-exact against <c>ssh31-pull-delete</c> (no wire byte, filter, or del-stats added) —
 /// so deletion is purely a local <see cref="RsyncWin.Fs.LocalTreePruner"/> pass after the transfer.
 /// </summary>
+[Trait("Category", "WindowsFs")]
 public class PullSessionDeleteTests
 {
     private static readonly HandshakeOptions Xxh128 = new() { ChecksumOffer = "xxh128" };

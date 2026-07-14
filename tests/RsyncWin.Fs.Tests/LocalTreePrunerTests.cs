@@ -3,14 +3,10 @@ using RsyncWin.Fs;
 namespace RsyncWin.Fs.Tests;
 
 /// <summary>Hermetic tests for <see cref="LocalTreePruner"/>: the pull-side <c>--delete</c> walk.</summary>
+[Trait("Category", "WindowsFs")]
 public class LocalTreePrunerTests
 {
-    private static string CreateTempDir()
-    {
-        string path = Path.Combine(Path.GetTempPath(), $"rsyncwin-prune-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(path);
-        return path;
-    }
+    private static string CreateTempDir() => WindowsFsTestSupport.CreateTempDirectory("rsyncwin-prune");
 
     [Fact]
     public void ExtraneousFileAndDirectory_AreDeleted_KeptFileSurvives()
@@ -239,7 +235,7 @@ public class LocalTreePrunerTests
     }
 
     [Fact]
-    public void DirectoryJunction_IsNotWalkedInto_TargetContentsSurvive()
+    public void DirectorySymlink_IsNotWalkedInto_TargetContentsSurvive()
     {
         string root = CreateTempDir();
         string targetDir = CreateTempDir(); // separate root, standing in for "outside the tree"
@@ -253,12 +249,9 @@ public class LocalTreePrunerTests
             {
                 Directory.CreateSymbolicLink(linkPath, targetDir);
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
             {
-                // Host lacks the privilege (or Developer Mode) required to create directory
-                // symlinks unelevated. TODO: exercise junctions/dir-symlinks at the interop tier
-                // where an elevated or dev-mode host is guaranteed.
-                return;
+                throw Xunit.Sdk.SkipException.ForSkip($"Directory symbolic links are unavailable on this host: {ex.Message}");
             }
 
             var keep = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -273,8 +266,153 @@ public class LocalTreePrunerTests
         }
         finally
         {
+            WindowsFsTestSupport.DeleteDirectory(root);
+            WindowsFsTestSupport.DeleteDirectory(targetDir);
+        }
+    }
+
+    [Fact]
+    public void DirectoryJunction_IsNotWalkedInto_TargetContentsSurvive()
+    {
+        string root = CreateTempDir();
+        string targetDir = CreateTempDir();
+        try
+        {
+            string targetFile = Path.Combine(targetDir, "outside.txt");
+            File.WriteAllText(targetFile, "must survive");
+
+            string linkPath = Path.Combine(root, "junction");
+            WindowsFsTestSupport.CreateDirectoryJunctionOrSkip(linkPath, targetDir);
+
+            PruneResult result = LocalTreePruner.Prune(
+                root, new HashSet<string>(StringComparer.OrdinalIgnoreCase), recurse: true);
+
+            Assert.False(Directory.Exists(linkPath));
+            Assert.Equal(1, result.DeletedSymlinks);
+            Assert.Equal(0, result.DeletedRegularFiles);
+            Assert.True(File.Exists(targetFile));
+            Assert.Equal("must survive", File.ReadAllText(targetFile));
+        }
+        finally
+        {
+            WindowsFsTestSupport.DeleteDirectory(root);
+            WindowsFsTestSupport.DeleteDirectory(targetDir);
+        }
+    }
+
+    [Fact]
+    public void ReadOnlyExtraneousDirectory_IsDeletedWithItsReadOnlyChildren()
+    {
+        string root = CreateTempDir();
+        try
+        {
+            string directory = Path.Combine(root, "readonly-dir");
+            string file = Path.Combine(directory, "readonly.txt");
+            Directory.CreateDirectory(directory);
+            File.WriteAllText(file, "remove me");
+            File.SetAttributes(directory, File.GetAttributes(directory) | FileAttributes.ReadOnly);
+            File.SetAttributes(file, File.GetAttributes(file) | FileAttributes.ReadOnly);
+
+            PruneResult result = LocalTreePruner.Prune(
+                root, new HashSet<string>(StringComparer.OrdinalIgnoreCase), recurse: true);
+
+            Assert.False(Directory.Exists(directory));
+            Assert.Equal(1, result.DeletedDirectories);
+            Assert.Equal(1, result.DeletedRegularFiles);
+        }
+        finally
+        {
+            string directory = Path.Combine(root, "readonly-dir");
+            string file = Path.Combine(directory, "readonly.txt");
+            if (File.Exists(file))
+                File.SetAttributes(file, FileAttributes.Normal);
+            if (Directory.Exists(directory))
+                File.SetAttributes(directory, FileAttributes.Normal);
             Directory.Delete(root, recursive: true);
-            Directory.Delete(targetDir, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ExtraneousFileSymlink_IsDeletedWithoutTouchingItsTarget()
+    {
+        string root = CreateTempDir();
+        string target = CreateTempDir();
+        try
+        {
+            string targetFile = Path.Combine(target, "outside.txt");
+            string link = Path.Combine(root, "linked-file");
+            File.WriteAllText(targetFile, "must survive");
+            WindowsFsTestSupport.CreateFileSymlinkOrSkip(link, targetFile);
+
+            PruneResult result = LocalTreePruner.Prune(
+                root, new HashSet<string>(StringComparer.OrdinalIgnoreCase), recurse: true);
+
+            Assert.False(File.Exists(link));
+            Assert.Equal(1, result.DeletedSymlinks);
+            Assert.Equal("must survive", File.ReadAllText(targetFile));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+            Directory.Delete(target, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void KeptDirectorySymlink_IsNotWalkedOrDeleted()
+    {
+        string root = CreateTempDir();
+        string target = CreateTempDir();
+        try
+        {
+            string targetFile = Path.Combine(target, "outside.txt");
+            string link = Path.Combine(root, "linked-dir");
+            File.WriteAllText(targetFile, "must survive");
+            WindowsFsTestSupport.CreateDirectorySymlinkOrSkip(link, target);
+
+            PruneResult result = LocalTreePruner.Prune(
+                root,
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "linked-dir" },
+                recurse: true);
+
+            Assert.Empty(result.DeletedPaths);
+            Assert.True(Directory.Exists(link));
+            Assert.Equal("must survive", File.ReadAllText(targetFile));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+            Directory.Delete(target, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void DeepLongPath_IsPrunedWithoutLeavingTheTreeBehind()
+    {
+        string root = CreateTempDir();
+        try
+        {
+            string current = root;
+            for (int i = 0; i < 10; i++)
+            {
+                current = Path.Combine(current, $"segment-{i:D2}-{new string('x', 24)}");
+                Directory.CreateDirectory(current);
+            }
+
+            string file = Path.Combine(current, "payload.txt");
+            File.WriteAllText(file, "remove me");
+            Assert.True(file.Length > 260, $"test path must exceed MAX_PATH, got {file.Length}");
+
+            PruneResult result = LocalTreePruner.Prune(
+                root, new HashSet<string>(StringComparer.OrdinalIgnoreCase), recurse: true);
+
+            Assert.False(Directory.Exists(root) && File.Exists(file));
+            Assert.Equal(1, result.DeletedRegularFiles);
+            Assert.Equal(10, result.DeletedDirectories);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
         }
     }
 }

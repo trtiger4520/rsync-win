@@ -131,6 +131,59 @@ public sealed class SshPushInteropTests(SshRsyncContainer container) : IClassFix
         }
     }
 
+    [Fact]
+    public async Task Push_DeepLongPath_ReconstructsByteExactOnServer()
+    {
+        if (!OperatingSystem.IsWindows())
+            throw Xunit.Sdk.SkipException.ForSkip("Long-path interop validation requires a Windows test host");
+
+        string localRoot = Path.Combine(Path.GetTempPath(), $"rsyncwin-push-long-{Guid.NewGuid():N}");
+        string[] segments = Enumerable.Range(0, 10)
+            .Select(i => $"segment-{i:D2}-{new string('x', 24)}")
+            .ToArray();
+
+        try
+        {
+            string current = localRoot;
+            foreach (string segment in segments)
+            {
+                current = Path.Combine(current, segment);
+                Directory.CreateDirectory(current);
+            }
+
+            string localFile = Path.Combine(current, "payload.txt");
+            await File.WriteAllTextAsync(localFile, "long push\n");
+            Assert.True(localFile.Length > 260, $"test path must exceed MAX_PATH, got {localFile.Length}");
+
+            string remoteDir = await CreateRemoteDirAsync("long-path");
+            string remoteFile = $"{remoteDir}/{string.Join('/', [.. segments, "payload.txt"])}";
+            var argv = new ServerArgvBuilder { Sender = false, Recurse = true, Paths = [$"{remoteDir}/"] };
+            List<EnumeratedEntry> entries = [.. FileEnumerator.Enumerate(localRoot)];
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+
+            await using var transport = OpenSshProcessTransport.Start(
+                OpenSshProcessTransport.DefaultSshExePath, container.SshArgs(argv.Build()));
+            PushSession.Result result = await PushSession.RunAsync(transport, argv, entries, cts.Token);
+
+            Assert.Equal(1, result.FilesSent);
+            Assert.Empty(result.FailedFiles);
+            Assert.Equal(0, await transport.WaitForExitAsync(cts.Token));
+            Assert.Equal(
+                Convert.ToHexStringLower(SHA256.HashData("long push\n"u8.ToArray())),
+                await HashInContainerAsync(remoteFile));
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(localRoot, recursive: true);
+            }
+            catch (DirectoryNotFoundException)
+            {
+            }
+        }
+    }
+
     /// <summary>
     /// P5-mirrored mtime+size fast path, push direction, live: a second push of the SAME local tree
     /// (real, unrounded NTFS mtimes) to the same destination must request nothing from the real

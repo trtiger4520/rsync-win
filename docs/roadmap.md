@@ -94,6 +94,11 @@ Tasks:
 Verify: `diff -r`-equivalent tree equality vs container; re-run transfers nothing; hostile-name
 tree (created inside the container) lands sanitized without escaping the destination.
 
+Post-completion Windows filesystem validation adds the `Category=WindowsFs` test gate for NTFS
+name mapping, long paths, read-only attributes, basis locking, and reparse-point isolation
+Docker SSH validation adds long-path pull and push cases; the 2026-07-14 Windows run passed
+WindowsFs 83/83, hermetic 447/447, and Interop 31/31 with no orphan `rsyncwin-interop` container
+
 ## P6 — Delta efficiency
 
 Goal: a near-identical basis file transfers only changed blocks. Hardest remaining phase — a

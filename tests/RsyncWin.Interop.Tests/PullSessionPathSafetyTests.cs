@@ -13,6 +13,7 @@ namespace RsyncWin.Interop.Tests;
 /// <see cref="RsyncWin.Fs.WindowsPathMapper"/> rather than rejected, plus the containment backstop
 /// and the mtime clamp that keeps a bogus wire timestamp from throwing out of the session.
 /// </summary>
+[Trait("Category", "WindowsFs")]
 public class PullSessionPathSafetyTests
 {
     private static FileEntry Regular(string name) => new()
@@ -80,6 +81,42 @@ public class PullSessionPathSafetyTests
                 destination, Regular("../evil.txt"), LocalPathPolicy.Unix, out _));
 
         Assert.Equal(RsyncExitCode.UnsupportedAction, exception.ExitCode);
+    }
+
+    [Fact]
+    public void HostileNames_CreateOnlyMappedFilesUnderTheActualDestination()
+    {
+        string destination = Path.Combine(Path.GetTempPath(), $"rsyncwin-pathsafety-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(destination);
+        try
+        {
+            string[] names = [
+                @"..\..\evil.txt",
+                @"C:\Windows\evil.txt",
+                "log.txt:hidden",
+                "CON.txt",
+                "trailing.dot.",
+            ];
+
+            string root = Path.GetFullPath(destination);
+            string rootWithSeparator = Path.EndsInDirectorySeparator(root)
+                ? root
+                : root + Path.DirectorySeparatorChar;
+
+            foreach (string name in names)
+            {
+                string path = PullSession.LocalPath(destination, Regular(name));
+                Assert.StartsWith(rootWithSeparator, path, StringComparison.OrdinalIgnoreCase);
+                File.WriteAllText(path, "mapped");
+            }
+
+            foreach (string path in Directory.GetFiles(destination, "*", SearchOption.AllDirectories))
+                Assert.StartsWith(rootWithSeparator, Path.GetFullPath(path), StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            Directory.Delete(destination, recursive: true);
+        }
     }
 
     [Theory]

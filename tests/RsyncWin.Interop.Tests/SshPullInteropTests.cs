@@ -17,6 +17,13 @@ namespace RsyncWin.Interop.Tests;
 [Trait("Category", "Interop")]
 public sealed class SshPullInteropTests(SshRsyncContainer container) : IClassFixture<SshRsyncContainer>
 {
+    private async Task<string> HashInContainerAsync(string remotePath)
+    {
+        var result = await container.ExecAsync("sh", "-c", $"sha256sum {remotePath}");
+        Assert.Equal(0, result.ExitCode);
+        return result.StdOut[..64];
+    }
+
     [Fact]
     public async Task Pull_WholeTree_ByteIdentical_AndExitsZero()
     {
@@ -163,6 +170,66 @@ public sealed class SshPullInteropTests(SshRsyncContainer container) : IClassFix
         }
         finally
         {
+            try
+            {
+                Directory.Delete(dest, recursive: true);
+            }
+            catch (DirectoryNotFoundException)
+            {
+            }
+        }
+    }
+
+    [Fact]
+    public async Task Pull_DeepLongPath_ReconstructsByteExactOnWindows()
+    {
+        if (!OperatingSystem.IsWindows())
+            throw Xunit.Sdk.SkipException.ForSkip("Long-path interop validation requires a Windows test host");
+
+        string[] segments = Enumerable.Range(0, 10)
+            .Select(i => $"segment-{i:D2}-{new string('x', 24)}")
+            .ToArray();
+        string relativeFile = string.Join('/', [.. segments, "payload.txt"]);
+        string remoteRoot = "/t/longpull";
+        string remoteFile = $"{remoteRoot}/{relativeFile}";
+        string dest = Path.Combine(Path.GetTempPath(), $"rsyncwin-pull-long-{Guid.NewGuid():N}");
+
+        try
+        {
+            var setup = await container.ExecAsync(
+                "sh", "-c",
+                $"rm -rf {remoteRoot} && mkdir -p {remoteRoot}/{string.Join('/', segments)} && " +
+                $"printf 'long pull\\n' > {remoteFile} && chown -R syncer:syncer {remoteRoot}");
+            Assert.Equal(0, setup.ExitCode);
+
+            var argv = new ServerArgvBuilder { Sender = true, Recurse = true, Paths = [$"{remoteRoot}/"] };
+            await using var transport = OpenSshProcessTransport.Start(
+                OpenSshProcessTransport.DefaultSshExePath, container.SshArgs(argv.Build()));
+            using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(120));
+
+            PullSession.Result result = await PullSession.RunAsync(transport, argv, dest, cts.Token);
+
+            Assert.Equal(1, result.TransferredFiles);
+            Assert.Empty(result.FailedFiles);
+            Assert.Equal(0, await transport.WaitForExitAsync(cts.Token));
+
+            string localFile = Path.Combine([dest, .. segments, "payload.txt"]);
+            Assert.True(localFile.Length > 260, $"test path must exceed MAX_PATH, got {localFile.Length}");
+            Assert.Equal("long pull\n", await File.ReadAllTextAsync(localFile, cts.Token));
+            Assert.Equal(
+                Convert.ToHexStringLower(SHA256.HashData("long pull\n"u8.ToArray())),
+                await HashInContainerAsync(remoteFile));
+
+            string root = Path.GetFullPath(dest);
+            string rootWithSeparator = Path.EndsInDirectorySeparator(root)
+                ? root
+                : root + Path.DirectorySeparatorChar;
+            foreach (string path in Directory.GetFiles(dest, "*", SearchOption.AllDirectories))
+                Assert.StartsWith(rootWithSeparator, Path.GetFullPath(path), StringComparison.OrdinalIgnoreCase);
+        }
+        finally
+        {
+            await container.ExecAsync("rm", "-rf", remoteRoot);
             try
             {
                 Directory.Delete(dest, recursive: true);

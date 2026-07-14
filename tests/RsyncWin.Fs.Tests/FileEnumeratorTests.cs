@@ -1,4 +1,5 @@
 using RsyncWin.Fs;
+using RsyncWin.Protocol.FileList;
 
 namespace RsyncWin.Fs.Tests;
 
@@ -9,14 +10,10 @@ namespace RsyncWin.Fs.Tests;
 /// the wire's positional ndx if this walker ever stopped reusing
 /// <see cref="RsyncWin.Protocol.FileList.FileNameComparer"/>.
 /// </summary>
+[Trait("Category", "WindowsFs")]
 public class FileEnumeratorTests
 {
-    private static string CreateTempDir()
-    {
-        string path = Path.Combine(Path.GetTempPath(), $"rsyncwin-flistwalk-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(path);
-        return path;
-    }
+    private static string CreateTempDir() => WindowsFsTestSupport.CreateTempDirectory("rsyncwin-flistwalk");
 
     [Fact]
     public void RootEntry_IsFirstAndNamedDot()
@@ -117,11 +114,9 @@ public class FileEnumeratorTests
             {
                 File.CreateSymbolicLink(linkPath, targetFile);
             }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or PlatformNotSupportedException)
             {
-                // Host lacks the privilege (or Developer Mode) required to create symlinks
-                // unelevated — nothing to assert against, skip gracefully rather than fail CI.
-                return;
+                throw Xunit.Sdk.SkipException.ForSkip($"File symbolic links are unavailable on this host: {ex.Message}");
             }
 
             IReadOnlyList<EnumeratedEntry> entries = FileEnumerator.Enumerate(root);
@@ -156,6 +151,123 @@ public class FileEnumeratorTests
         finally
         {
             Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void ReadOnlyAttributes_SynthesizeTheExpectedWindowsModes()
+    {
+        string root = CreateTempDir();
+        try
+        {
+            string writable = Path.Combine(root, "writable.txt");
+            string readOnly = Path.Combine(root, "readonly.txt");
+            string readOnlyDirectory = Path.Combine(root, "readonly-dir");
+            File.WriteAllText(writable, "writable");
+            File.WriteAllText(readOnly, "readonly");
+            Directory.CreateDirectory(readOnlyDirectory);
+            File.SetAttributes(readOnly, File.GetAttributes(readOnly) | FileAttributes.ReadOnly);
+            File.SetAttributes(readOnlyDirectory, File.GetAttributes(readOnlyDirectory) | FileAttributes.ReadOnly);
+
+            IReadOnlyList<EnumeratedEntry> entries = FileEnumerator.Enumerate(root);
+
+            Assert.Equal(FileEntry.RegularFile | 0x1A4, entries.Single(e => e.Wire.Name == "writable.txt").Wire.Mode);
+            Assert.Equal(FileEntry.RegularFile | 0x124, entries.Single(e => e.Wire.Name == "readonly.txt").Wire.Mode);
+            Assert.Equal(FileEntry.Directory | 0x16D, entries.Single(e => e.Wire.Name == "readonly-dir").Wire.Mode);
+        }
+        finally
+        {
+            string readOnly = Path.Combine(root, "readonly.txt");
+            string readOnlyDirectory = Path.Combine(root, "readonly-dir");
+            if (File.Exists(readOnly))
+                File.SetAttributes(readOnly, FileAttributes.Normal);
+            if (Directory.Exists(readOnlyDirectory))
+                File.SetAttributes(readOnlyDirectory, FileAttributes.Normal);
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void DeepTreeBeyondMaxPath_IsEnumeratedAndKeepsAbsolutePaths()
+    {
+        string root = CreateTempDir();
+        try
+        {
+            string current = root;
+            for (int i = 0; i < 10; i++)
+            {
+                current = Path.Combine(current, $"segment-{i:D2}-{new string('x', 24)}");
+                Directory.CreateDirectory(current);
+            }
+
+            string filePath = Path.Combine(current, "payload.txt");
+            File.WriteAllText(filePath, "long path");
+            Assert.True(filePath.Length > 260, $"test path must exceed MAX_PATH, got {filePath.Length}");
+
+            IReadOnlyList<EnumeratedEntry> entries = FileEnumerator.Enumerate(root);
+            EnumeratedEntry payload = Assert.Single(entries, e => e.Wire.Name.EndsWith("/payload.txt", StringComparison.Ordinal));
+
+            Assert.Equal(Path.GetFullPath(filePath), payload.AbsolutePath);
+            Assert.Equal(10, payload.Wire.Name.Count(c => c == '/'));
+            Assert.Equal("long path", File.ReadAllText(payload.AbsolutePath));
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
+    public void DirectorySymlink_IsMarkedAndItsTargetIsNotEnumerated()
+    {
+        string root = CreateTempDir();
+        string target = CreateTempDir();
+        try
+        {
+            string targetFile = Path.Combine(target, "outside.txt");
+            File.WriteAllText(targetFile, "outside");
+            string link = Path.Combine(root, "linked-dir");
+
+            WindowsFsTestSupport.CreateDirectorySymlinkOrSkip(link, target);
+
+            IReadOnlyList<EnumeratedEntry> entries = FileEnumerator.Enumerate(root);
+            EnumeratedEntry linked = Assert.Single(entries, e => e.Wire.Name == "linked-dir");
+
+            Assert.True(linked.Wire.IsSymlink);
+            Assert.DoesNotContain(entries, e => e.Wire.Name == "linked-dir/outside.txt");
+            Assert.Equal("outside", File.ReadAllText(targetFile));
+        }
+        finally
+        {
+            WindowsFsTestSupport.DeleteDirectory(root);
+            WindowsFsTestSupport.DeleteDirectory(target);
+        }
+    }
+
+    [Fact]
+    public void DirectoryJunction_IsMarkedAndItsTargetIsNotEnumerated()
+    {
+        string root = CreateTempDir();
+        string target = CreateTempDir();
+        try
+        {
+            string targetFile = Path.Combine(target, "outside.txt");
+            File.WriteAllText(targetFile, "outside");
+            string link = Path.Combine(root, "junction-dir");
+
+            WindowsFsTestSupport.CreateDirectoryJunctionOrSkip(link, target);
+
+            IReadOnlyList<EnumeratedEntry> entries = FileEnumerator.Enumerate(root);
+            EnumeratedEntry junction = Assert.Single(entries, e => e.Wire.Name == "junction-dir");
+
+            Assert.True(junction.Wire.IsSymlink);
+            Assert.DoesNotContain(entries, e => e.Wire.Name == "junction-dir/outside.txt");
+            Assert.Equal("outside", File.ReadAllText(targetFile));
+        }
+        finally
+        {
+            WindowsFsTestSupport.DeleteDirectory(root);
+            WindowsFsTestSupport.DeleteDirectory(target);
         }
     }
 }

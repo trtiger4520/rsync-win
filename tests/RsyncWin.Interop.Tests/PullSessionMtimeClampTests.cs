@@ -17,6 +17,7 @@ namespace RsyncWin.Interop.Tests;
 /// <see cref="ArgumentException"/> on hosts with a positive UTC offset (e.g. UTC+8) — a distinct,
 /// pre-existing platform quirk unrelated to this fix, out of scope for these four findings.
 /// </remarks>
+[Trait("Category", "WindowsFs")]
 public class PullSessionMtimeClampTests
 {
     private static FileEntry Regular(string name, long modifiedUnixSeconds, long size) => new()
