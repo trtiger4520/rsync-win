@@ -9,6 +9,21 @@ machines can sync with real rsync servers without WSL or Cygwin.
 
 Scope: **pull and push**; transport over **ssh.exe** and the **rsync daemon** (`rsync://`); CLI only.
 
+**Start here every session:** `docs/roadmap.md` is the living plan — phase status with commit
+evidence, what to do next, and the mandatory per-phase working method (spec → capture → validate →
+implement → hermetic tests → live interop → adversarial review → commit). `AGENTS.md` is the
+model-agnostic entry point mirroring the reading order for non-Claude agents.
+
+## Documentation upkeep (mandatory)
+
+The docs are how a context-limited session avoids re-deriving byte-level facts. Update them **in
+the same commit** as the change they describe:
+
+- Phase progress, re-scoping, new/finished tasks → status table + checkboxes in `docs/roadmap.md`
+- New or corrected protocol facts, resolved/deferred open questions → `docs/wire-notes.md`
+- Byte-layout changes → the relevant `docs/*-spec.md`
+- New standing rules or traps → this file
+
 ## Build & Run
 
 ```powershell
