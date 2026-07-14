@@ -41,8 +41,13 @@ Record the source of every ported table in a comment next to it.
 | Block sizing (`sum_sizes_sqroot`) | **measured** | 19-point `--debug=deltasum2` sweep; all reproduced |
 | Rolling weak checksum | **measured** | every `--debug=deltasum4` chunk sum reproduced; signed-char pinned |
 | MD4 | **verified** | RFC 1320 suite + openssl legacy provider |
-| Seeded strong-sum variants (MD5/xxh64 block vs whole-file) | spec'd, unverified live | pin against a real delta transfer in P4 |
+| Seeded strong-sum variants (MD5/xxh64 block vs whole-file) | **implemented vs spec vectors** | final live pin lands with the P4 delta transfer |
+| Sum head codec + validation | **implemented** | measured 300000 head + spec vectors; null head observed in captures |
 | NDX_DONE phase choreography | spec'd, unverified | pin by capture in P4 (`codec-spec.md` §6/§12) |
+
+**P1 hard gate: CLOSED.** Every pure codec (varint/varlong/ndx/vstring/mux header/rolling/MD4/
+seeded strong sums/block sizing/sum head) is implemented and gated by spec vectors and/or captured
+bytes — 146 hermetic tests. What remains before P4 can transfer a file is assembly, not codecs.
 
 ## Checksum negotiation (measured, rsync 3.4.3)
 
