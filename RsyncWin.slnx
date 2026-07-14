@@ -7,6 +7,7 @@
     <Project Path="src/RsyncWin.Transport/RsyncWin.Transport.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/RsyncWin.Cli.Tests/RsyncWin.Cli.Tests.csproj" />
     <Project Path="tests/RsyncWin.Fs.Tests/RsyncWin.Fs.Tests.csproj" />
     <Project Path="tests/RsyncWin.Interop.Tests/RsyncWin.Interop.Tests.csproj" />
     <Project Path="tests/RsyncWin.Protocol.Tests/RsyncWin.Protocol.Tests.csproj" />

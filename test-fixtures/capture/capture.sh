@@ -214,6 +214,52 @@ sshcap "ssh31-pull-redo" --protocol=31 -t --no-whole-file --bwlimit=200 fake:/t/
 wait $CORRUPTER 2>/dev/null || true
 cp /t/redodst/big.bin "$OUT/ssh31-pull-redo/result.bin"
 
+# P9: --checksum (-c). Under -c the sender appends a 16-byte xxh128 F_SUM to
+# every regular-file flist entry (absent on dirs), and the transfer decision is
+# by content, not mtime+size. Dest discriminators: a_match = identical content +
+# stale mtime (-c fixes only the time, no data transfer); b_fast = SAME size+mtime
+# but DIFFERENT content (the plain fast path skips it, -c must transfer it);
+# c_new = present only in src. Verified: c2s a_match=0x0008 (REPORT_TIME),
+# b_fast=0x8002 (TRANSFER|REPORT_CHANGE)+real sum head, c_new=0xa002+null head.
+rm -rf /t/c1src /t/c1dst
+mkdir -p /t/c1src/subdir
+printf 'hello rsync\n'      > /t/c1src/a_match.txt
+detbytes 65536 c1blob       > /t/c1src/b_fast.bin
+printf 'brand new file\n'   > /t/c1src/c_new.txt
+printf 'nested\n'           > /t/c1src/subdir/nested.txt
+touch -d '2021-06-15 12:00:00' /t/c1src/a_match.txt /t/c1src/b_fast.bin \
+      /t/c1src/c_new.txt /t/c1src/subdir/nested.txt /t/c1src/subdir /t/c1src
+mkdir -p /t/c1dst/subdir
+printf 'hello rsync\n'      > /t/c1dst/a_match.txt
+touch -d '2019-01-01 00:00:00' /t/c1dst/a_match.txt
+detbytes 65536 c1blobDIFF   > /t/c1dst/b_fast.bin
+touch -d '2021-06-15 12:00:00' /t/c1dst/b_fast.bin
+printf 'nested\n'           > /t/c1dst/subdir/nested.txt
+touch -d '2021-06-15 12:00:00' /t/c1dst/subdir/nested.txt /t/c1dst/subdir /t/c1dst
+mkdir -p "$OUT/ssh31-pull-checksum"
+cp /t/c1dst/b_fast.bin "$OUT/ssh31-pull-checksum/dst-b_fast.bin" # pre-pull basis for the hermetic full-session replay
+sshcap "ssh31-pull-checksum" --protocol=31 -rtc --no-inc-recursive fake:/t/c1src/ /t/c1dst/
+
+# P9: --delete on a pull. The client is the receiver, so deletion is LOCAL: the
+# server argv carries no --delete, the filter list stays the empty int32 0, and
+# NO NDX_DEL_STATS crosses the wire in either direction (choreographically a
+# plain pull — the del-stats live only in the local receiver). Dest holds one
+# extraneous regular file and one extraneous dir with a file inside.
+rm -rf /t/c2src /t/c2dst
+mkdir -p /t/c2src/keepdir
+printf 'keep one\n' > /t/c2src/keep1.txt
+printf 'keep two\n' > /t/c2src/keepdir/keep2.txt
+touch -d '2021-06-15 12:00:00' /t/c2src/keep1.txt /t/c2src/keepdir/keep2.txt \
+      /t/c2src/keepdir /t/c2src
+mkdir -p /t/c2dst/keepdir /t/c2dst/extradir
+printf 'keep one\n' > /t/c2dst/keep1.txt
+printf 'keep two\n' > /t/c2dst/keepdir/keep2.txt
+printf 'extraneous\n' > /t/c2dst/extra.txt
+printf 'inside extra\n' > /t/c2dst/extradir/inside.txt
+touch -d '2021-06-15 12:00:00' /t/c2dst/keep1.txt /t/c2dst/keepdir/keep2.txt \
+      /t/c2dst/keepdir /t/c2dst/extra.txt /t/c2dst/extradir/inside.txt /t/c2dst/extradir
+sshcap "ssh31-pull-delete" --protocol=31 -rt --delete --no-inc-recursive fake:/t/c2src/ /t/c2dst/
+
 # Push (sender-side capture; P7 reference, free to record now)
 rm -rf /t/pushdst && mkdir -p /t/pushdst
 sshcap "ssh31-push-rt" --protocol=31 -rt --no-inc-recursive /t/tree/ fake:/t/pushdst/

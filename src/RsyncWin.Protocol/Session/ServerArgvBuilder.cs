@@ -39,6 +39,9 @@ public sealed record ServerArgvBuilder
     public bool PreserveGroup { get; init; }
     public bool PreserveDevices { get; init; }
     public bool PreservePerms { get; init; }
+
+    /// <summary>Emit <c>-c</c> (<c>--checksum</c>): the server includes a per-file whole-file checksum in the flist and both sides compare by content, not mtime+size.</summary>
+    public bool Checksum { get; init; }
     public bool ListOnly { get; init; }
 
     public IReadOnlyList<string> Build()
@@ -57,6 +60,7 @@ public sealed record ServerArgvBuilder
         if (PreserveTimes) bundle.Append('t');
         if (PreservePerms) bundle.Append('p');
         if (Recurse) bundle.Append('r');
+        if (Checksum) bundle.Append('c');
         if (Protocol >= 30) bundle.Append("e.").Append(ClientInfo);
         if (bundle.Length > 1)
             args.Add(bundle.ToString());

@@ -1,5 +1,6 @@
 using System.Text;
 using RsyncWin.Protocol;
+using RsyncWin.Protocol.Checksums;
 using RsyncWin.Protocol.FileList;
 using RsyncWin.Protocol.Mux;
 using RsyncWin.Protocol.Session;
@@ -72,6 +73,8 @@ internal static class SessionSetup
             PreserveDevices = serverArgs.PreserveDevices,
             PreserveSpecials = serverArgs.PreserveDevices,
             Id0Names = (session.CompatFlags & RsyncConstants.CompatId0Names) != 0,
+            Checksum = serverArgs.Checksum,
+            ChecksumLength = serverArgs.Checksum ? StrongChecksum.DigestLength(session.TransferChecksum) : 0,
         };
         FileListResult fileList = await FileListReader.ReadAsync(reader, options, cancellationToken);
 

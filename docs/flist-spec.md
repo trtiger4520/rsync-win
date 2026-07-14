@@ -67,7 +67,15 @@ Decode order:
 11. **rdev**, iff (`preserve_devices` and mode is chr/blk) or (`preserve_specials` and fifo/sock and proto < 31): major = varint iff `!XMIT_SAME_RDEV_MAJOR`; minor = **varint always** (at 30/31). At proto 31 FIFOs/sockets carry **no rdev bytes at all**; at proto 30 they carry a minor varint (sender forces `SAME_RDEV_MAJOR`, minor 0). Receiver forces file length to 0 for devices (after reading the size field).
 12. **symlink target**, iff `preserve_links` (`-l`) and mode is symlink: §6.
 13. *(proto < 30 hardlink dev/ino longints — never at 30/31)*
-14. **flist checksum**, iff `--checksum`: `flist_csum_len` raw bytes (full digest of the negotiated flist algorithm — MD5 at 30/31 unless negotiated otherwise), regular files only at 28+. Option-skipped for us.
+14. **flist checksum**, iff `--checksum`: `xfer_sum_len` raw bytes — the full digest of the
+    negotiated transfer checksum, **UNSEEDED** (byte-identical to the file's whole-file transfer
+    trailer, §3 of `transfer-spec.md`), **regular files only** (absent on dirs/symlinks/devices),
+    and the entry's **LAST** field. **VERIFIED (P9, `ssh31-pull-checksum`)**: 16-byte xxh128
+    emitted low64-LE ∥ high64-LE at the negotiated length; our own client offers md5 (also 16).
+    `FileListReader` reads it when `FileListOptions.Checksum` is set, using
+    `ChecksumLength = StrongChecksum.DigestLength(negotiated)`; the generator compares it against a
+    freshly computed whole-file sum of the local basis to decide the transfer (see
+    `transfer-spec.md` §4b).
 
 Annotated capture bytes (ssh31-pull-rt, first + third entries):
 ```

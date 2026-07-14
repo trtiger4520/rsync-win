@@ -1,0 +1,2 @@
+client: rsync --protocol=31 -rt --delete --no-inc-recursive fake:/t/c2src/ /t/c2dst/
+exit=0

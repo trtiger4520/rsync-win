@@ -19,6 +19,14 @@ public sealed record FileListOptions
 
     /// <summary>CF_ID0_NAMES was negotiated: the id-list terminator carries a name for id 0.</summary>
     public bool Id0Names { get; init; }
+
+    /// <summary><c>--checksum</c> (<c>-c</c>, <c>always_checksum</c>) is active: the sender appends a
+    /// whole-file checksum to every regular-file entry.</summary>
+    public bool Checksum { get; init; }
+
+    /// <summary>Negotiated transfer-checksum digest length (<c>xfer_sum_len</c>) — 16 for
+    /// xxh128/md5/md4, 8 for xxh64/xxh3. Only consulted when <see cref="Checksum"/> is set.</summary>
+    public int ChecksumLength { get; init; }
 }
 
 public sealed record FileListResult(
@@ -49,6 +57,10 @@ public static class FileListReader
     public static async ValueTask<FileListResult> ReadAsync(
         MultiplexReader input, FileListOptions options, CancellationToken cancellationToken = default)
     {
+        if (options.Checksum && options.ChecksumLength is <= 0 or > 64)
+            throw new ProtocolException(RsyncExitCode.UnsupportedAction,
+                $"flist: --checksum active but ChecksumLength={options.ChecksumLength} was never negotiated");
+
         var entries = new List<FileEntry>();
 
         // Delta state, seeded identically on both sides and persisting across the whole list.
@@ -142,6 +154,10 @@ public static class FileListReader
                 linkTarget = await input.ReadDataExactlyAsync(targetLength, cancellationToken);
             }
 
+            byte[]? flistChecksum = null;
+            if (options.Checksum && fileType == FileEntry.RegularFile)
+                flistChecksum = await input.ReadDataExactlyAsync(options.ChecksumLength, cancellationToken);
+
             entries.Add(new FileEntry
             {
                 NameBytes = name,
@@ -154,6 +170,7 @@ public static class FileListReader
                 RdevMajor = rdevMajor,
                 RdevMinor = rdevMinor,
                 LinkTarget = linkTarget,
+                FlistChecksum = flistChecksum,
             });
         }
 

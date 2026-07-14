@@ -53,14 +53,17 @@ public static class PullSession
         IReadOnlyList<string> NotSentByServer,
         int IoErrorFlags,
         SessionStats Stats,
-        IReadOnlyList<ServerMessage> ServerMessages);
+        IReadOnlyList<ServerMessage> ServerMessages,
+        PruneResult Prune,
+        bool PruneSkippedDueToIoError);
 
     public static async Task<Result> RunAsync(
         IRsyncTransport transport,
         ServerArgvBuilder serverArgs,
         string destinationDirectory,
         CancellationToken cancellationToken = default,
-        HandshakeOptions? handshake = null)
+        HandshakeOptions? handshake = null,
+        bool delete = false)
     {
         SessionChannel channel = await SessionSetup.OpenAsync(transport, serverArgs, cancellationToken, handshake);
         IReadOnlyList<FileEntry> entries = channel.FileList.Entries;
@@ -121,14 +124,15 @@ public static class PullSession
         List<int> redo = await RunPhaseAsync(
             (requestedNdx, ct) => WritePhase0RequestsAsync(
                 channel.Writer, outbound, entries, destinationDirectory, channel.Session,
-                skipped, excluded, requestedNdx, ct),
+                serverArgs.Checksum, skipped, excluded, requestedNdx, ct),
             (requestedNdx, ct) => receiver.ReceiveUntilDoneAsync(requestedNdx, ct),
             cancellationToken);
 
         // ---- phase 1 (redo) + the measured DONE#2/#3/#4 burst ---------------------------------
         List<int> failed = await RunPhaseAsync(
             (requestedNdx, ct) => WriteRedoRequestsAsync(
-                channel.Writer, outbound, entries, destinationDirectory, channel.Session, redo, requestedNdx, ct),
+                channel.Writer, outbound, entries, destinationDirectory, channel.Session,
+                serverArgs.Checksum, redo, requestedNdx, ct),
             (requestedNdx, ct) => receiver.ReceiveUntilDoneAsync(requestedNdx, ct),
             cancellationToken);
 
@@ -161,6 +165,29 @@ public static class PullSession
                 ioErrorFlags |= BinaryPrimitives.ReadInt32LittleEndian(message.Payload);
         }
 
+        // ---- --delete: purely local, ZERO wire bytes (docs/wire-notes.md, ssh31-pull-delete) ----
+        // rsync suppresses deletion on a flist io_error to avoid deleting due to a partial listing.
+        PruneResult prune = new([], 0, 0, 0, 0, 0);
+        bool pruneSkipped = false;
+        if (delete)
+        {
+            if (ioErrorFlags != 0)
+            {
+                pruneSkipped = true;
+            }
+            else
+            {
+                var keep = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                for (int ndx = 0; ndx < entries.Count; ndx++)
+                {
+                    if (excluded.Contains(ndx) || entries[ndx].NameBytes is [(byte)'.'])
+                        continue;
+                    keep.Add(WindowsPathMapper.Map(entries[ndx].Name).Mapped);
+                }
+                prune = LocalTreePruner.Prune(destinationDirectory, keep, serverArgs.Recurse);
+            }
+        }
+
         return new Result(
             channel.Session,
             entries,
@@ -174,7 +201,9 @@ public static class PullSession
             notSent,
             ioErrorFlags,
             stats,
-            channel.ServerMessages);
+            channel.ServerMessages,
+            prune,
+            pruneSkipped);
     }
 
     /// <summary>
@@ -291,6 +320,100 @@ public static class PullSession
     }
 
     /// <summary>
+    /// Outcome of the <c>--checksum</c> (<c>-c</c>) per-file decision
+    /// (<see cref="ComputeChecksumDecisionAsync"/>), which replaces the mtime+size fast path with a
+    /// whole-file content compare when active.
+    /// </summary>
+    internal enum ChecksumOutcome
+    {
+        /// <summary>Content and mtime both match: no request, no bytes.</summary>
+        Skip,
+        /// <summary>Content matches but mtime differs: an ndx+iflags-only echo, no sum head — the
+        /// local mtime is fixed immediately as a side effect of reaching this outcome.</summary>
+        AttributeOnlyTime,
+        /// <summary>Content differs, is unknown, or the file is missing: a real transfer request.</summary>
+        Transfer,
+    }
+
+    /// <summary>
+    /// The <c>-c</c> decision (P9, capture <c>ssh31-pull-checksum</c>): under <c>--checksum</c> the
+    /// mtime+size fast path is REPLACED by a whole-file-checksum compare of the local basis against
+    /// <see cref="FileEntry.FlistChecksum"/> — content is always read, size/mtime alone never
+    /// short-circuit it. Decision table (capture-pinned iflags):
+    /// <list type="bullet">
+    /// <item>missing locally → <see cref="ChecksumOutcome.Transfer"/>, Transfer|IsNew|ReportChange
+    /// (0xA002).</item>
+    /// <item>content differs → <see cref="ChecksumOutcome.Transfer"/>, Transfer|ReportChange (0x8002)
+    /// plus ReportSize iff size differs, plus ReportTime iff mtime differs.</item>
+    /// <item>content matches, mtime differs → <see cref="ChecksumOutcome.AttributeOnlyTime"/>,
+    /// ReportTime (0x0008) — mirrors the directory REPORT_TIME path, and the local mtime is fixed
+    /// here rather than by a later transfer finalize, since none follows.</item>
+    /// <item>content matches, mtime matches → <see cref="ChecksumOutcome.Skip"/>.</item>
+    /// </list>
+    /// A missing <see cref="FileEntry.FlistChecksum"/> on an existing regular file (should not
+    /// happen under -c, but a peer bug must not crash the session) and a locked/vanished local file
+    /// both fall back to <see cref="ChecksumOutcome.Transfer"/> rather than throwing.
+    /// </summary>
+    internal static async Task<(ChecksumOutcome Outcome, ItemFlags Iflags)> ComputeChecksumDecisionAsync(
+        FileEntry entry, string path, SessionContext session, CancellationToken cancellationToken)
+    {
+        if (!File.Exists(path))
+            return (ChecksumOutcome.Transfer, ItemFlags.Transfer | ItemFlags.IsNew | ItemFlags.ReportChange);
+
+        if (entry.FlistChecksum is null)
+            return (ChecksumOutcome.Transfer, ItemFlags.Transfer | ItemFlags.ReportChange);
+
+        byte[]? localSum = await ComputeWholeFileChecksumAsync(path, session, cancellationToken);
+        if (localSum is null)
+            return (ChecksumOutcome.Transfer, ItemFlags.Transfer | ItemFlags.ReportChange); // locked/vanished mid-check
+
+        var info = new FileInfo(path);
+        if (!localSum.AsSpan().SequenceEqual(entry.FlistChecksum))
+        {
+            ItemFlags iflags = ItemFlags.Transfer | ItemFlags.ReportChange;
+            if (info.Length != entry.Size)
+                iflags |= ItemFlags.ReportSize;
+            long localMtime = new DateTimeOffset(info.LastWriteTimeUtc, TimeSpan.Zero).ToUnixTimeSeconds();
+            if (localMtime != ClampedMtimeUnixSeconds(entry.ModifiedUnixSeconds))
+                iflags |= ItemFlags.ReportTime;
+            return (ChecksumOutcome.Transfer, iflags);
+        }
+
+        long mtime = new DateTimeOffset(info.LastWriteTimeUtc, TimeSpan.Zero).ToUnixTimeSeconds();
+        if (mtime == ClampedMtimeUnixSeconds(entry.ModifiedUnixSeconds))
+            return (ChecksumOutcome.Skip, ItemFlags.None);
+
+        File.SetLastWriteTimeUtc(path, ClampedMtimeUtc(entry.ModifiedUnixSeconds));
+        return (ChecksumOutcome.AttributeOnlyTime, ItemFlags.ReportTime);
+    }
+
+    /// <summary>Streams <paramref name="path"/> through the negotiated whole-file checksum (the same
+    /// algorithm/seed/protocol rules <see cref="FileReceiver"/> uses for the transfer trailer) via
+    /// <see cref="BasisFileStore"/>. Null when the file cannot be opened (locked/vanished between the
+    /// existence check and here) — the caller treats that the same as an unknown checksum.</summary>
+    private static async Task<byte[]?> ComputeWholeFileChecksumAsync(
+        string path, SessionContext session, CancellationToken cancellationToken)
+    {
+        FileStream? stream = BasisFileStore.Open(path);
+        if (stream is null)
+            return null;
+
+        WholeFileChecksum hasher = StrongChecksum.CreateFileSum(
+            session.TransferChecksum, session.ChecksumSeed, session.Protocol);
+        await using (stream)
+        {
+            byte[] buffer = new byte[RsyncConstants.ChunkSize];
+            int read;
+            while ((read = await stream.ReadAsync(buffer, cancellationToken)) > 0)
+                hasher.Append(buffer.AsSpan(0, read));
+        }
+
+        byte[] digest = new byte[16];
+        int length = hasher.Finish(digest);
+        return digest[..length];
+    }
+
+    /// <summary>
     /// The directory half of the mtime fast path (P5): creates the directory if it is missing,
     /// then decides whether it needs an itemize echo at all. A directory that already exists with
     /// the entry's exact mtime gets none — verified by capture (<c>ssh31-pull-uptodate</c>: the
@@ -327,7 +450,8 @@ public static class PullSession
     /// Phase-0 request writer: walks the sorted flist, creates directories, and requests every
     /// regular file that fails the fast path — posting each requested ndx to <paramref name="requestedNdx"/>
     /// as it goes so the concurrently running reply reader can grow its expectation set without
-    /// waiting for every request to be written first.
+    /// waiting for every request to be written first. Under <paramref name="checksum"/> (<c>-c</c>)
+    /// the mtime+size fast path is replaced by <see cref="ComputeChecksumDecisionAsync"/>.
     /// </summary>
     private static async Task WritePhase0RequestsAsync(
         MultiplexWriter writer,
@@ -335,6 +459,7 @@ public static class PullSession
         IReadOnlyList<FileEntry> entries,
         string destinationDirectory,
         SessionContext session,
+        bool checksum,
         List<(string Name, string Reason)> skipped,
         HashSet<int> excluded,
         ChannelWriter<int> requestedNdx,
@@ -355,8 +480,29 @@ public static class PullSession
             }
             else if (entry.IsRegularFile)
             {
-                if (!TryComputeRequestIflags(entry, destinationDirectory, out ItemFlags iflags))
+                ItemFlags iflags;
+                if (checksum)
+                {
+                    (ChecksumOutcome outcome, ItemFlags cIflags) = await ComputeChecksumDecisionAsync(
+                        entry, LocalPath(destinationDirectory, entry), session, cancellationToken);
+                    if (outcome == ChecksumOutcome.Skip)
+                        continue; // content and mtime both match — no request, nothing on the wire
+
+                    if (outcome == ChecksumOutcome.AttributeOnlyTime)
+                    {
+                        // Mirrors the directory REPORT_TIME path: ndx+iflags only, no sum head, and
+                        // never posted to requestedNdx — the reply receiver's existing
+                        // "!Transfer -> continue" path consumes the server's attribute-only echo.
+                        WriteNdxAndFlags(writer, codec, ndx, cIflags);
+                        continue;
+                    }
+
+                    iflags = cIflags;
+                }
+                else if (!TryComputeRequestIflags(entry, destinationDirectory, out iflags))
+                {
                     continue; // already up to date — no request, no ndx, nothing on the wire
+                }
 
                 await WriteRegularFileRequestAsync(
                     writer, codec, ndx, iflags, entry, destinationDirectory, session,
@@ -435,7 +581,8 @@ public static class PullSession
     /// computation as phase 0 (capture-pinned: the redo request is indistinguishable in shape,
     /// e.g. <c>0x8008</c> again for a mtime-only mismatch) but a full-length s2length — the basis
     /// on disk is unchanged, since a failed phase-0 receive discards its temp file and never
-    /// touches the destination.
+    /// touches the destination. Under <paramref name="checksum"/> a redo always forces a Transfer —
+    /// the sender only redoes an ndx it flagged Transfer, so it never means "up to date" here.
     /// </summary>
     private static async Task WriteRedoRequestsAsync(
         MultiplexWriter writer,
@@ -443,6 +590,7 @@ public static class PullSession
         IReadOnlyList<FileEntry> entries,
         string destinationDirectory,
         SessionContext session,
+        bool checksum,
         List<int> redo,
         ChannelWriter<int> requestedNdx,
         CancellationToken cancellationToken)
@@ -451,8 +599,22 @@ public static class PullSession
         foreach (int ndx in redo)
         {
             FileEntry entry = entries[ndx];
-            if (!TryComputeRequestIflags(entry, destinationDirectory, out ItemFlags iflags))
+            ItemFlags iflags;
+            if (checksum)
+            {
+                (ChecksumOutcome outcome, ItemFlags cIflags) = await ComputeChecksumDecisionAsync(
+                    entry, LocalPath(destinationDirectory, entry), session, cancellationToken);
+                // Basis unchanged since phase 0 (a failed receive never touches the destination), so
+                // a genuine content mismatch is still expected; still force Transfer even if the
+                // decision came back Skip/AttributeOnlyTime, same as the non-checksum fallback below.
+                iflags = outcome == ChecksumOutcome.Transfer
+                    ? cIflags
+                    : ItemFlags.Transfer | ItemFlags.ReportChange;
+            }
+            else if (!TryComputeRequestIflags(entry, destinationDirectory, out iflags))
+            {
                 iflags = ItemFlags.Transfer; // still redoing even if a race made this look up to date
+            }
 
             await WriteRegularFileRequestAsync(
                 writer, codec, ndx, iflags, entry, destinationDirectory, session,

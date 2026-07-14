@@ -1,0 +1,6 @@
+rsync
+--server
+--sender
+-tre.LsfxCIvu
+.
+/t/c2src/

@@ -67,6 +67,30 @@ PROVENANCE: captures `ssh31-pull-uptodate` (dest = exact copy, size+mtime match)
 - A regular file that exists locally but differs is still requested, with the all-zero sum head (no delta support before P6) and iflags built from which field(s) differ: `ITEM_TRANSFER` always, plus `ITEM_REPORT_SIZE` iff the size differs, plus `ITEM_REPORT_TIME` iff the mtime differs. Never `ITEM_IS_NEW` — that stays reserved for files missing locally. Observed in `ssh31-pull-partial`: b001 (size and mtime both differ) → `0x800C`; b002 (same size, older mtime) → `0x8008`.
 - A file missing locally keeps the existing shape from §3/§4: `ITEM_TRANSFER|ITEM_IS_NEW` + all-zero sum head.
 
+### 4b. `--checksum` (`-c`) generator decision (P9, capture-pinned)
+
+PROVENANCE: `ssh31-pull-checksum` (a `-rtc` pull; dest crafted so a_match = identical content +
+stale mtime, b_fast = same size+mtime but different content, c_new = missing), c2s iflags + s2c
+byte-verified; behavioral contrast (`-c` vs no-`-c` itemize) confirmed with a local `rsync -ni`.
+
+Under `-c` the sender appends a whole-file `F_SUM` to every regular-file flist entry (§14 of
+`flist-spec.md`; 16-byte xxh128, unseeded, `= xfer_sum_len`). The generator's mtime+size fast path
+(§4a) is **replaced** by a content compare of the local basis against that `F_SUM` — the local
+whole-file sum is computed with the negotiated algorithm, unseeded (`StrongChecksum.CreateFileSum`,
+byte-identical to the §3 trailer). Decision → iflags (measured):
+
+| local state | decision | iflags | wire |
+|---|---|---|---|
+| missing | full transfer, new | `Transfer\|IsNew\|ReportChange` = **0xA002** | null head |
+| exists, `F_SUM` differs | transfer | `Transfer\|ReportChange` (**0x8002**) + `ReportSize` iff size differs + `ReportTime` iff mtime differs | real signature over the existing basis |
+| exists, `F_SUM` matches, mtime differs | attribute-only, fix mtime | `ReportTime` = **0x0008** | ndx+iflags only, no sum head (server echoes an attribute-only reply) |
+| exists, `F_SUM` matches, mtime matches | skip | — | zero bytes |
+
+Note `-c` sets **`ITEM_REPORT_CHANGE` (0x0002)** on every transferred file (the generator KNOWS the
+content changed) — the bit is absent without `-c`, where only size/mtime are compared (§4a). `-c`
+still uses the ordinary delta path for an existing basis (b_fast → real sum head + block sums), not a
+full resend.
+
 ## 5. Phase/DONE choreography with transfers (pins codec-spec §6)
 
 PROVENANCE: canonical-behavior `generator.c:generate_files` (incl. `EARLY_DELAY_DONE_MSG() ≡ !delay_updates`, `EARLY_DELETE_DONE_MSG() ≡ !(delete_during==2 || delete_after)`), `sender.c:send_files` (`max_phase=2`), `main.c` (`do_recv` parent lines: final goodbye; `do_server_sender`: stats; `read_final_goodbye`), `receiver.c:recv_files`; counts MEASURED for list-only in `wire-notes.md` P3 (c2s 5 DONEs @31 / 4 @30; s2c 3 DONEs + stats + @31 goodbye).
@@ -87,6 +111,27 @@ Default pull (no `--delay-updates`, no `--delete-after/--delete-delay`), c2s = u
 - **NDX_DEL_STATS (-3)** shape: `write_ndx(-3)` (negative path: first-ever negative write encodes `FF 02`) followed by **5 varints**: deleted regular files, dirs, symlinks, devices, specials. Sent by the generator (us) at proto ≥ 31 only, only when `delete_mode || force_delete`; position: before the delete-phase DONE (#4 early, or late after `--delete-after` deletions). A server sender that reads it **echoes it verbatim s2c** (`rsync.c:read_ndx_and_attrs`: `am_sender && am_server`). Reader rule stands: consume 5 varints, not a phase marker; 3.4.3 bounds each at `MAX_WIRE_DEL_STAT = 1<<28` (reject → exit 2).
 - **Empty redo list**: phase 1 carries zero bytes c2s — DONE#1 then (after the receiver-side has consumed all phase-0 replies) the #2/#3/#4 burst. Nothing else is ever sent in an empty phase.
 - Single-process trap: canonical's receiver→generator `write_int(pipe, NDX_DONE)` and `MSG_REDO`/`MSG_DONE` bookkeeping are **fork-pipe internals** — never emit a 4-byte `FF FF FF FF` DONE on the wire; wire DONEs are always the 1-byte ndx-codec form at ≥ 30.
+
+### 5a. Pull `--delete` del-stats are LOCAL — NO wire message (P9, capture-pinned)
+
+PROVENANCE: `ssh31-pull-delete` (a `-rt --delete` pull with one extraneous dest file + one
+extraneous dest dir), both directions byte-verified by the wire-analyst.
+
+The `NDX_DEL_STATS` mechanism in §5 (c2s del-stats + s2c echo) is canonical's general write path,
+but **it does not fire on a client pull.** Measured:
+
+- The server argv carries **no** `--delete` (`-tre.LsfxCIvu`, identical to a plain `-rt` pull) —
+  deletion is the receiver's job and the receiver is the local client.
+- The c2s filter list stays the empty `int32 0`; the c2s burst is a plain `#2 #3 #4` with **no**
+  `FF 02` / ndx -3 and **no** 5-varint block anywhere.
+- The s2c carries **no** del-stats echo either; its stats block and goodbye leg are byte-shape
+  identical to a plain proto-31 pull.
+
+So for our client pull, `--delete` is purely a local prune (`RsyncWin.Fs.LocalTreePruner`), gated on
+`flist io_error == 0`, with **zero** protocol-stream changes. The generator's del counts are computed
+locally and never serialized. (Where del-stats WOULD cross the wire is a **push** `--delete` — the
+remote receiver deletes and must report counts s2c to the client-sender that prints `--stats`; that
+path is uncaptured and out of P9 scope.)
 
 ## 6. Redo mechanics (client = receiver+generator in one process)
 
@@ -132,7 +177,8 @@ PROVENANCE: NEWS.md 3.4.0–3.4.3 + code; flist-spec §9 already covers flist/me
 ## 10. Pin by capture (P4 additions)
 
 1. The c2s DONE#2/#3/#4 burst bytes at 31 with a real transfer (extends the measured list-only tail).
-2. A `--delete` run at 31: c2s `FF 02` + 5 varints and its s2c echo position.
+2. ~~A `--delete` run at 31: c2s `FF 02` + 5 varints and its s2c echo position.~~ **RESOLVED (P9,
+   `ssh31-pull-delete`): a client pull sends NO del-stats on the wire in either direction — see §5a.**
 3. `MSG_NO_SEND` from a vanished file + end-of-pass `MSG_IO_ERROR` (expect exit 24).
 4. Token stream + trailer for: zero-length file, count=0 full transfer, and a delta with matches (verify remainder-block length handling on the last block).
 
@@ -154,8 +200,9 @@ ssh30-pull-rt, ssh31-pull-delta). Highlights:
 - Delta capture: request carried sum head (429, 700, 2, 400) + 429×6B block sums; reply tokens
   `ref0, lit700, ref[2..213], lit700, ref[215..428], END` reconstruct exactly 300000 bytes with the
   remainder rule on block 428; reconstructed SHA-256 equals the full-transfer content.
-- Sections still uncaptured (pin in the phase that needs them): `--delete` del-stats echo,
-  MSG_NO_SEND/MSG_IO_ERROR traffic.
+- Sections still uncaptured (pin in the phase that needs them): MSG_NO_SEND/MSG_IO_ERROR traffic;
+  **push** `--delete` del-stats (s2c). Pull `--delete` del-stats resolved (P9, §5a: none on the wire);
+  `--checksum` flist F_SUM + generator decision resolved (P9, §4b).
 
 Implementation gates in the test suite: `PullSessionReplayTests` replays the whole capture through
 `PullSession` (7 files reconstructed, SHA-256-pinned, xxh128 trailers genuinely verified) and

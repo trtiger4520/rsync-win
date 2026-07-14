@@ -15,4 +15,8 @@
     <ProjectReference Include="..\RsyncWin.Engine\RsyncWin.Engine.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="RsyncWin.Cli.Tests" />
+  </ItemGroup>
+
 </Project>

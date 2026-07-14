@@ -56,6 +56,8 @@ Record the source of every ported table in a comment next to it.
 | Handshake runner (client side) | **live-verified** | replays all three captured prologues byte-exact AND negotiates 31/29 against a live rsync 3.4.3 over ssh.exe (P2 interop tests) |
 | Server argv (`server_options()`) | **golden-pinned** | `ServerArgvBuilder` reproduces all 7 captured `argv.txt` files word-for-word |
 | compat_flags letter→bit mapping | **source-verified** | compat.c behavior read (see "client_info" below); consistent with captured 510 |
+| `--checksum` flist F_SUM (16B xxh128, unseeded, low64-LE∥high64-LE, entry's last field, regular files only) | **capture-pinned (P9)** | `ssh31-pull-checksum`; F_SUM == the whole-file transfer trailer; generator decision iflags 0x0008/0x8002/0xA002 (`transfer-spec.md` §4b) |
+| Pull `--delete` sends NO del-stats on the wire (either direction) | **capture-pinned (P9)** | `ssh31-pull-delete`; server argv has no `--delete`, empty filter list, no `FF 02` c2s or s2c — deletion is a local prune (`transfer-spec.md` §5a) |
 
 **P1 hard gate: CLOSED.** Every pure codec (varint/varlong/ndx/vstring/mux header/rolling/MD4/
 seeded strong sums/block sizing/sum head) is implemented and gated by spec vectors and/or captured
@@ -330,8 +332,13 @@ Further pins from the P7 decisive captures (`ssh31-push-uptodate` / `-delta` / `
 - ~~Exact `server_options()` bundled short-flag set~~ — resolved (7 argv goldens + compat.c read)
 - ~~Double-`NDX_DONE` at a protocol-31 phase boundary~~ — resolved (P4 capture; full DONE map in
   `transfer-spec.md`)
-- `--secluded-args` posture for remote paths with spaces/metacharacters — P5 (ssh passes the argv
-  through the remote shell, which splits on whitespace)
+- `--secluded-args` posture for remote paths with spaces/metacharacters — **deferred to P10**. The
+  format IS observed (P9 residual capture, ssh `-s`): the server argv drops the `. <paths>` block
+  entirely (`-stre.LsfxCIvu`, `s` first in the bundle), and the held-back file args are sent as a
+  **NUL-terminated list BEFORE the version int32** — e.g. `rsync\0.\0/t/sec src/\0\0` (empty string
+  terminates). The leading `rsync`/argv[0] token and the daemon interaction are not fully decoded, so
+  P9 recognizes `-s`/`--secluded-args`/`--protect-args` and rejects them cleanly (exit 1) rather than
+  guess a pre-handshake protocol. Pin the argv[0] token + daemon case, then implement, in P10.
 - ~~Phase-0 writes every request before reading any reply~~ — resolved (P5): the request writer and
   reply reader now run as two concurrent loops per phase, handed off through a bounded
   `System.Threading.Channels.Channel<int>` of requested ndx values and joined with `Task.WhenAll`,
@@ -364,10 +371,12 @@ Further pins from the P7 decisive captures (`ssh31-push-uptodate` / `-delta` / `
   API); sources ≥ 2 GiB are rejected with an explicit failure rather than streamed — stream/map the
   source before advertising large-file push support (P7 deferral, mirrors the SignatureGenerator
   note above)
-- CLI quirk (pre-existing, observed during P8 smoke tests): an ssh endpoint whose host is
-  unreachable can surface as exit 12 ("stream ended after 0 of 4 expected bytes") instead of the
-  ssh-255 → exit 5 mapping, depending on which side fails first — revisit exit-code ordering in
-  P9's exit-code completeness pass
+- ~~CLI quirk (pre-existing, observed during P8 smoke tests): an ssh endpoint whose host is
+  unreachable can surface as exit 12 instead of the ssh-255 → exit 5 mapping~~ — **resolved (P9)**:
+  the CLI now routes every ssh-path `ProtocolException`/`InvalidDataException` through
+  `ExitCodeMapper.Map(ex, sshExitCode)`, which checks the ssh process exit code first and returns
+  `StartClientServerError` (5) when ssh exited 255, so an unreachable host maps to 5, not 12. One
+  unit test per exit code (0/2/3/4/5/10/11/12/23/24/30) in `RsyncWin.Cli.Tests`.
 - Protocol **29 session support is preamble/argv-deep only** (everywhere, not just daemon): the
   29-era flist layout (1-byte xflags, 4-byte mtime, no varints) has no decode/encode path, so a
   real 29-only peer would desync mid-flist. Daemon sessions floor the negotiation at 30 with a clear
@@ -385,6 +394,8 @@ Further pins from the P7 decisive captures (`ssh31-push-uptodate` / `-delta` / `
   reader + the live re-push-transfers-nothing gate with real NTFS nsec mtimes); the `ssh31-push-nsec1`
   c2s flist is not itself byte-replayed — add it to the FileListWriter goldens if the nsec path ever
   regresses
-- Windows drive-letter paths (`D:\backup`) parse as remote specs on either CLI side (the first-':'
-  rule) — pull inherited this from P5, push fails loudly via ssh resolving host "D"; disambiguate in
-  P9's flag-surface pass
+- ~~Windows drive-letter paths (`D:\backup`) parse as remote specs on either CLI side~~ —
+  **resolved (P9)**: `CommandLineParser.IsLocalWindowsPath` classifies a spec as a local Windows path
+  when it is a drive spec (ASCII letter + `:` + `\`/`/`/end) or a `\\server\share` UNC, guarding the
+  ssh single-colon rule (daemon `rsync://`/`host::` detection order is unchanged). A genuine
+  `host:path` still classifies remote. Unit-tested in `CommandLineParserTests`.

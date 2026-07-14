@@ -27,6 +27,7 @@ public class ServerArgvBuilderTests
         { "ssh31-push-rt", new() { Sender = false, Recurse = true, Paths = ["/t/pushdst/"] } },
         { "ssh31-push-nsec1", new() { Sender = false, Recurse = true, Paths = ["/t/nsdst/"] } },
         { "ssh31-push-delta", new() { Sender = false, Paths = ["/t/pushdelta/"] } },
+        { "ssh31-pull-checksum", new() { Sender = true, Recurse = true, Checksum = true, Paths = ["/t/c1src/"] } },
         // ssh31-push-redo is deliberately NOT a golden here: its capture used --bwlimit=200 (a
         // capture-time throttle to stretch the transfer for the redo window, see capture.sh) which
         // is outside the option set ServerArgvBuilder supports — otherwise it is the same "-t"
@@ -43,5 +44,17 @@ public class ServerArgvBuilderTests
     {
         var argv = new ServerArgvBuilder { Sender = true, Protocol = 29, Paths = ["/x"] }.Build();
         Assert.DoesNotContain(argv, a => a.Contains("e."));
+    }
+
+    [Fact]
+    public void Checksum_LandsAfterRecurse_WithArchiveLetters()
+    {
+        var argv = new ServerArgvBuilder
+        {
+            Sender = true, Recurse = true, PreserveLinks = true, PreserveOwner = true,
+            PreserveGroup = true, PreserveDevices = true, PreservePerms = true, Checksum = true,
+            Paths = ["/t/tree/"],
+        }.Build();
+        Assert.Contains("-logDtprce.LsfxCIvu", argv);
     }
 }

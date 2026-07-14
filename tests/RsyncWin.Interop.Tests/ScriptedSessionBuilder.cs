@@ -73,6 +73,21 @@ internal static class ScriptedSessionBuilder
     /// <summary>The single-byte <c>NDX_DONE</c> marker (state untouched — never goes through a codec).</summary>
     public static byte[] NdxDone => [0x00];
 
+    /// <summary>
+    /// A raw, standalone <c>MSG_IO_ERROR</c> mux frame (tag 22): a mid-session io_error
+    /// notification, distinct from the flist-terminator io_error field. Unlike <see cref="Wrap"/>,
+    /// this is its own frame (not folded into a MSG_DATA payload) so it exercises
+    /// <c>MultiplexReader</c>'s real out-of-band dispatch of a tag encountered between data reads.
+    /// </summary>
+    public static byte[] BuildIoErrorFrame(int flags)
+    {
+        Span<byte> payload = stackalloc byte[4];
+        BinaryPrimitives.WriteInt32LittleEndian(payload, flags);
+        byte[] header = new byte[MuxHeader.Size];
+        new MuxHeader(MessageTag.IoError, payload.Length).Write(header);
+        return [.. header, .. payload.ToArray()];
+    }
+
     /// <summary>Five zero varlong(3) stats fields — content doesn't matter for these tests.</summary>
     public static byte[] StatsBlock =>
     [

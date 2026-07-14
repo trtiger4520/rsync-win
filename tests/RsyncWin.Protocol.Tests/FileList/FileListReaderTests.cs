@@ -201,6 +201,38 @@ public class FileListReaderTests
     }
 
     [Fact]
+    public async Task PullChecksum_AppendsFSum_OnRegularFilesOnly()
+    {
+        var options = TimesRecurse with { Checksum = true, ChecksumLength = 16 };
+        FileListResult result = await FileListReader.ReadAsync(CaptureReader("ssh31-pull-checksum"), options);
+
+        (string Name, bool Dir)[] expected =
+        [
+            (".", true),
+            ("a_match.txt", false),
+            ("b_fast.bin", false),
+            ("c_new.txt", false),
+            ("subdir", true),
+            ("subdir/nested.txt", false),
+        ];
+        Assert.Equal(expected.Select(e => e.Name), result.Entries.Select(e => e.Name));
+        Assert.Equal(expected.Select(e => e.Dir), result.Entries.Select(e => e.IsDirectory));
+
+        // Directories carry no F_SUM.
+        Assert.All(result.Entries.Where(e => e.IsDirectory), e => Assert.Null(e.FlistChecksum));
+        // Every regular file carries a full-length xxh128 digest.
+        Assert.All(result.Entries.Where(e => e.IsRegularFile), e => Assert.Equal(16, e.FlistChecksum?.Length));
+
+        FileEntry match = result.Entries.Single(e => e.Name == "a_match.txt");
+        FileEntry fast = result.Entries.Single(e => e.Name == "b_fast.bin");
+        Assert.Equal("09852ee072aa634cf08d35dc887a7999", Convert.ToHexStringLower(match.FlistChecksum!));
+        Assert.Equal("51850289d127a046fc41e93a737b421f", Convert.ToHexStringLower(fast.FlistChecksum!));
+
+        // A wrong F_SUM length would desync the tail — reaching io_error cleanly proves it's right.
+        Assert.Equal(0, result.IoError);
+    }
+
+    [Fact]
     public async Task UnrequestedHardlinkData_FailsLoudly_NotSilently()
     {
         // xflags 0x218 (SAME_UID|SAME_GID|HLINKED) as varint 82 18: decoding the hlink varint we

@@ -42,6 +42,10 @@ public sealed record FileEntry
     /// <summary>Symlink target bytes; null unless <c>-l</c> was active and this entry is a symlink.</summary>
     public byte[]? LinkTarget { get; init; }
 
+    /// <summary>Whole-file checksum from the flist under <c>--checksum</c> (<c>F_SUM</c>); null unless
+    /// <c>-c</c> was active and this entry is a regular file.</summary>
+    public byte[]? FlistChecksum { get; init; }
+
     public string Name => Encoding.UTF8.GetString(NameBytes);
 
     public int FileType => Mode & TypeMask;

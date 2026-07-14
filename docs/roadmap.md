@@ -23,10 +23,11 @@
 | P6 | Delta efficiency (basis matching) | **DONE** | `P6 complete` commit — xxh128 block sums capture-pinned (429/429 + 2048/2048 full-length via `ssh31-pull-redo`); delta replay + redo request bytes golden; live gate: 8-byte edit of 4 MiB re-pulls literal 2048 / matched 4,192,256, EXACTLY equal to real rsync `--stats`; zero-fill degrade on changed basis |
 | P7 | Push (sender role) | **DONE** | `P7 complete` commit — four full-stream c2s replay gates byte-identical (`ssh31-push-rt`/`-uptodate`/`-delta`/`-redo`); MatchSearcher token streams capture-exact incl. redo; live gates 4/4: tree SHA-identical server-side, re-push transfers nothing with real NTFS nsec mtimes, delta literal/matched EXACTLY equal to real rsync `--stats`, vanished source → exit 23 not hang; 3 adversarial findings fixed |
 | P8 | Daemon transport (`rsync://`) | **DONE** | `P8 complete` commit — preamble byte-identical to captured client (greeting/auth/argv) across 10 daemon vectors; auth digest recipe computationally reproduced (md5, proto 31 and 29); post-OK stream `cmp`-identical to ssh minus version ints; 13 hermetic daemon replays + live gates 8/8 (anon+auth pull, module listing, push byte-identical, re-push transfers nothing, @ERROR/readonly exit codes); 4 adversarial findings fixed |
-| P9 | Polish (`--delete`, `-z`, flag surface, exit codes) | **NEXT** | — |
+| P9 | Polish (`--checksum`, `--delete` pull, flag surface, exit codes) | **DONE** | `P9 complete` commit — `--checksum` flist F_SUM capture-pinned (`ssh31-pull-checksum`: 16B xxh128, unseeded, regular-files-only, last field) + generator decision 0x0008/0x8002/0xA002 (hermetic byte-exact c2s replay + decision unit tests + live attribute-only/content-change gates); `--delete` pull is **local-only** (`ssh31-pull-delete`: zero wire del-stats either direction) via `LocalTreePruner` (reparse-point-safe, io_error-suppressed incl. mid-session `MSG_IO_ERROR`); drive-letter/UNC disambiguation, `-c`/`--delete`/long-form/unknown-flag handling, exit-code completeness 0/2/3/4/5/10/11/12/23/24/30 + ssh-255-before-12 ordering fix (`ExitCodeMapper`, one test per code); 394 hermetic + 23 live interop green; adversarial review found no code bugs, 2 test-strength gaps closed |
+| P10 | Compression (`-z`) + `--secluded-args` + push `--checksum`/`--delete` | **NEXT** | — |
 
-Estimated effort remaining (active agent working hours, from P1–P8 measured pace):
-P9 ≈ 2–4 h.
+Estimated effort remaining (active agent working hours, from P1–P9 measured pace):
+P10 ≈ 4–8 h (`-z` is a new compressed-token codec + compression-string negotiation — the bulk).
 
 ## The working method (follow this loop every phase)
 
@@ -138,11 +139,40 @@ authenticated. Done — see the status table evidence; full byte layout in `docs
 
 ## P9 — Polish
 
-- [ ] `--delete` (capture del-stats echo — uncaptured, `transfer-spec.md` §10), `--checksum`
-      (skip fast path, full block compare), optional `-z` (in-box deflate).
-- [ ] Exit-code completeness (0/2/3/5/10/11/12/23/24/30) with tests per code.
-- [ ] Broader flag surface; `--secluded-args` posture for remote paths with spaces (ssh passes
-      argv through the remote shell — open question in `wire-notes.md`).
+Scoped (with the user) to **everything except `-z`**, which moved to P10 (a compressed-token codec is
+a phase of its own). `--checksum` and `--delete` landed **pull-only** — the push variants need a
+FileListWriter F_SUM emission / a server-side del-stats read plus their own captures (P10).
+
+- [x] **`--checksum` (`-c`), pull** — capture `ssh31-pull-checksum` pinned the flist `F_SUM`
+      (16-byte xxh128, unseeded, regular-files-only, entry's last field; `flist-spec.md` §14) and the
+      generator's decision iflags (`transfer-spec.md` §4b). `FileListReader` decodes F_SUM under
+      `FileListOptions.Checksum`; `PullSession.ComputeChecksumDecisionAsync` replaces the mtime+size
+      fast path with a whole-file-checksum compare (0x0008 attribute-only / 0x8002 transfer / 0xA002
+      new / skip). Gates: hermetic byte-exact c2s replay + decision unit tests + live gates.
+- [x] **`--delete`, pull** — capture `ssh31-pull-delete` proved it is **local-only**: no `--delete`
+      in the server argv, empty filter list, NO `NDX_DEL_STATS` on the wire either direction
+      (`transfer-spec.md` §5a — a correction to the earlier spec-derived assumption). Implemented as a
+      local `RsyncWin.Fs.LocalTreePruner` (reparse-point-safe, containment-checked, read-only-clearing),
+      run after the transfer tail and suppressed on `io_error` (flist OR mid-session `MSG_IO_ERROR`).
+- [x] **Exit-code completeness** (0/2/3/4/5/10/11/12/23/24/30) with a test per code — `ExitCodeMapper`
+      centralizes the mapping and fixes the ssh-255-before-12 ordering (unreachable host → 5, not 12).
+- [x] **Broader flag surface** — drive-letter/UNC disambiguation (`D:\backup` is local, not a remote
+      host), `-c`/`--delete`/`--recursive`/`--archive`/`--times` long forms, unknown-flag rejection
+      (exit 1), extracted `CommandLineParser` (unit-tested). `--secluded-args`/`-s`/`--protect-args`
+      is **recognized and rejected** (exit 1) — its wire format is observed (`wire-notes.md` open
+      questions) but deferred to P10.
+
+## P10 — Compression + secluded-args + push polish
+
+- [ ] **`-z` compression** — capture the compression-string negotiation (stock rsync offers `zstd`
+      first; the BCL only has deflate, so force/scope to `zlib`) and the compressed-token format
+      (`END_FLAG`/`TOKEN_REL`/`DEFLATED_DATA`, cross-file zlib flush state, RLE runs — `transfer-spec.md`
+      §2 marks it out of scope today). A new codec, hence its own phase.
+- [ ] **`--secluded-args` (`-s`)** — implement the pre-handshake NUL-terminated arg list (format
+      observed in P9: server argv drops `. <paths>`, the file args are sent before the version int32);
+      pin the leading argv[0] token + the daemon case, then send it. Fixes remote paths with spaces.
+- [ ] **Push `--checksum` / `--delete`** — FileListWriter F_SUM emission (push-`-c`), and the
+      server-side del-stats read (push-`--delete`, s2c) — each needs its own capture.
 
 ## Standing constraints (do not relax)
 
