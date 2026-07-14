@@ -109,4 +109,46 @@ public class FileListWriterTests
         await Assert.ThrowsAsync<NotSupportedException>(async () =>
             await WriteFramedAsync(CaptureTree(), TimesRecurse with { PreserveUid = true }));
     }
+
+    /// <summary>
+    /// P10 push --checksum: a regular-file entry gains a 16-byte F_SUM as its LAST field; directories
+    /// carry none (docs/flist-spec.md §14, capture ssh31-push-checksum). The reader side is already
+    /// capture-pinned against real rsync (pull -c), so a write→read round-trip that recovers the exact
+    /// F_SUM proves the writer emits the real-rsync layout. b000_empty's F_SUM is the real decoded
+    /// value from the capture (xxh128("") seed 0), tying this to ground truth, not just self-consistency.
+    /// </summary>
+    [Fact]
+    public async Task Checksum_EmitsFSumOnRegularFilesOnly_RoundTrips()
+    {
+        // xxh128("") seed 0 = ssh31-push-checksum's decoded b000_empty F_SUM (low64-LE ∥ high64-LE).
+        byte[] emptyXxh128 = [0x7f, 0x49, 0x8d, 0x46, 0x24, 0xc3, 0x01, 0x60, 0xd8, 0x98, 0x47, 0x01, 0xd3, 0x06, 0xaa, 0x99];
+        byte[] fileSum = [.. Enumerable.Range(0, 16).Select(i => (byte)(0xA0 + i))];
+
+        FileEntry[] entries =
+        [
+            Entry(".", FileEntry.Directory | 0b111_101_101, 4096, 1577934245), // dir: no F_SUM
+            Entry("b000_empty", FileEntry.RegularFile | 0b110_100_100, 0, 1577934245) with { FlistChecksum = emptyXxh128 },
+            Entry("b001_small.txt", FileEntry.RegularFile | 0b110_100_100, 12, 1577934245) with { FlistChecksum = fileSum },
+        ];
+
+        var options = new FileListOptions { Protocol = 31, Checksum = true, ChecksumLength = 16 };
+        byte[] framed = await WriteFramedAsync(entries, options);
+
+        var reader = new MultiplexReader(PipeReader.Create(new MemoryStream(framed)));
+        FileListResult result = await FileListReader.ReadAsync(reader, options);
+
+        // Post-sort order: "." first, then non-dirs in byte order (b000 < b001).
+        Assert.Null(result.Entries.Single(e => e.Name == ".").FlistChecksum);
+        Assert.Equal(emptyXxh128, result.Entries.Single(e => e.Name == "b000_empty").FlistChecksum);
+        Assert.Equal(fileSum, result.Entries.Single(e => e.Name == "b001_small.txt").FlistChecksum);
+    }
+
+    [Fact]
+    public async Task Checksum_MissingFSumOnRegularFile_Throws()
+    {
+        FileEntry[] entries = [Entry("a.txt", FileEntry.RegularFile | 0b110_100_100, 12, 1577934245)]; // no FlistChecksum
+        var options = new FileListOptions { Protocol = 31, Checksum = true, ChecksumLength = 16 };
+
+        await Assert.ThrowsAsync<ArgumentException>(async () => await WriteFramedAsync(entries, options));
+    }
 }

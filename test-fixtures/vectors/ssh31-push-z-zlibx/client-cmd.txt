@@ -1,0 +1,2 @@
+client: rsync --protocol=31 -rt -z --compress-choice=zlibx --no-inc-recursive /t/ztree/ fake:/t/zpushdst/
+exit=0

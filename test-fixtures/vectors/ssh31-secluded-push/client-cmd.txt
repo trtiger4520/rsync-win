@@ -1,0 +1,2 @@
+client: rsync --protocol=31 -rt -s --no-inc-recursive /t/tree/ fake:/t/spushdst/
+exit=0

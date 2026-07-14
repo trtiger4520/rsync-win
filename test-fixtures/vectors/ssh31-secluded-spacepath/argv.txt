@@ -1,0 +1,4 @@
+rsync
+--server
+--sender
+-stre.LsfxCIvu

@@ -1,0 +1,6 @@
+rsync
+--server
+-tre.LsfxCIvu
+--delete
+.
+/t/pddst/

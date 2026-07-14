@@ -1,0 +1,6 @@
+rsync
+--server
+-tre.LsfxCIvu
+--new-compress
+.
+/t/zpushdst/

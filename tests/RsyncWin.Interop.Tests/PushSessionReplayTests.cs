@@ -371,6 +371,59 @@ public class PushSessionReplayTests
     }
 
     /// <summary>
+    /// P10 push --delete: the remote receiver deletes extraneous entries and reports each via a
+    /// MSG_DELETED mux frame (tag 0x6c), right after the seed and before the transfer phase — there
+    /// is NO del-stats block (ssh31-push-delete). This replays that s2c and pins that PushSession
+    /// consumes the three MSG_DELETED frames transparently (no desync/hang), surfaces them on
+    /// <see cref="PushSession.Result.DeletedPaths"/> deepest-first, and that our c2s opens with the
+    /// empty filter list --delete adds.
+    /// </summary>
+    [Fact]
+    public async Task DeleteReplay_ConsumesMsgDeleted_ReportsPaths_AndSendsFilterList()
+    {
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        string sourceDir = Path.Combine(Path.GetTempPath(), $"rsyncwin-push-delete-{Guid.NewGuid():N}");
+        try
+        {
+            // Source /t/pdsrc: keep1.txt + keepdir/keep2.txt (content irrelevant — the canned s2c
+            // requests only an attribute fix on the root, no transfers). Only the ndx space must line
+            // up: "." sorts to ndx 0, which is the one entry the server itemizes.
+            Directory.CreateDirectory(Path.Combine(sourceDir, "keepdir"));
+            await File.WriteAllBytesAsync(Path.Combine(sourceDir, "keep1.txt"), "keep one\n"u8.ToArray(), cts.Token);
+            await File.WriteAllBytesAsync(Path.Combine(sourceDir, "keepdir", "keep2.txt"), "keep two\n"u8.ToArray(), cts.Token);
+
+            List<EnumeratedEntry> entries = [.. FileEnumerator.Enumerate(sourceDir)];
+
+            await using var transport = new ScriptedTransport(Capture("ssh31-push-delete", "s2c.bin"));
+            PushSession.Result result = await PushSession.RunAsync(
+                transport,
+                new ServerArgvBuilder { Sender = false, Recurse = true, Delete = true, Paths = ["/t/pddst/"] },
+                entries, cts.Token, handshake: Xxh128);
+
+            Assert.Equal(["extradir/inside.txt", "extradir", "extra.txt"], result.DeletedPaths);
+            Assert.Equal(1, result.AttributeOnlyReplies); // the root "." mtime fix
+            Assert.Equal(0, result.FilesSent);
+            Assert.Empty(result.FailedFiles);
+
+            // --delete adds the empty filter list (int32 0) to the c2s, before the flist.
+            byte[] written = await transport.WrittenBytesAsync();
+            int prologue = 4 + 1 + "xxh128".Length;
+            byte[] logical = Demux(written[prologue..]);
+            Assert.Equal((byte[])[0, 0, 0, 0], logical[..4]);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(sourceDir, recursive: true);
+            }
+            catch (DirectoryNotFoundException)
+            {
+            }
+        }
+    }
+
+    /// <summary>
     /// F1 (adversarial review, exit-code correctness): a remote MSG_ERROR_XFER used to be collected
     /// into a local list and dropped on the floor — the push completed as if nothing happened, and
     /// Program.cs had no way to map it to exit 23 the way rsync itself would. Pins that the message

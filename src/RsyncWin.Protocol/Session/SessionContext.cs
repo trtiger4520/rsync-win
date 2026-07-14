@@ -1,4 +1,5 @@
 using RsyncWin.Protocol.Checksums;
+using RsyncWin.Protocol.Delta;
 
 namespace RsyncWin.Protocol.Session;
 
@@ -32,6 +33,11 @@ public sealed record SessionContext
 
     /// <summary>Whole-file checksum algorithm (<c>file_sum</c>). Same as the transfer sum in v1.</summary>
     public required ChecksumAlgorithm FileChecksum { get; init; }
+
+    /// <summary>Token-stream compression (<c>-z</c>). Forced to <see cref="CompressionMethod.Zlibx"/>
+    /// when the caller requested <c>-z</c> (via <c>--new-compress</c>, no compression string
+    /// negotiated); <see cref="CompressionMethod.None"/> otherwise.</summary>
+    public CompressionMethod Compression { get; init; } = CompressionMethod.None;
 
     public bool ChecksumSeedFix => (CompatFlags & RsyncConstants.CompatChecksumSeedFix) != 0;
 

@@ -69,11 +69,11 @@ public class CommandLineParserTests
     [Fact]
     public void Parse_UnknownShortFlag_ReturnsSyntaxError()
     {
-        (ParsedCommand? command, ParseFailure? failure) = CommandLineParser.Parse(["-z", "host:/src", @"D:\backup"]);
+        (ParsedCommand? command, ParseFailure? failure) = CommandLineParser.Parse(["-q", "host:/src", @"D:\backup"]);
 
         Assert.Null(command);
         Assert.NotNull(failure);
-        Assert.Contains("-z", failure!.Message);
+        Assert.Contains("-q", failure!.Message);
     }
 
     [Fact]
@@ -116,55 +116,88 @@ public class CommandLineParserTests
     }
 
     [Fact]
-    public void Parse_SecludedArgsShortFlag_IsRejected()
+    public void Parse_SecludedArgsShortFlag_IsAccepted()
     {
         (ParsedCommand? command, ParseFailure? failure) = CommandLineParser.Parse(["-s", "host:/src", @"D:\backup"]);
 
-        Assert.Null(command);
-        Assert.NotNull(failure);
-        Assert.Contains("secluded-args", failure!.Message);
+        Assert.Null(failure);
+        Assert.Equal(ParsedAction.SshPull, command!.Action);
+        Assert.True(command.Secluded);
     }
 
     [Fact]
-    public void Parse_SecludedArgsLongFlag_IsRejected()
+    public void Parse_SecludedArgsLongFlag_IsAccepted()
     {
         (ParsedCommand? command, ParseFailure? failure) =
             CommandLineParser.Parse(["--secluded-args", "host:/src", @"D:\backup"]);
 
-        Assert.Null(command);
-        Assert.NotNull(failure);
-        Assert.Contains("secluded-args", failure!.Message);
+        Assert.Null(failure);
+        Assert.True(command!.Secluded);
     }
 
     [Fact]
-    public void Parse_BundledSecludedArgsShortFlag_IsRejected()
+    public void Parse_ProtectArgsAlias_IsAccepted()
+    {
+        (ParsedCommand? command, ParseFailure? failure) =
+            CommandLineParser.Parse(["--protect-args", "host:/src", @"D:\backup"]);
+
+        Assert.Null(failure);
+        Assert.True(command!.Secluded);
+    }
+
+    [Fact]
+    public void Parse_BundledSecludedArgsShortFlag_IsAccepted()
     {
         (ParsedCommand? command, ParseFailure? failure) = CommandLineParser.Parse(["-rs", "host:/src", @"D:\backup"]);
 
-        Assert.Null(command);
-        Assert.NotNull(failure);
-        Assert.Contains("secluded-args", failure!.Message);
+        Assert.Null(failure);
+        Assert.True(command!.Recurse);
+        Assert.True(command.Secluded);
+    }
+
+    [Theory]
+    [InlineData("-z")]
+    [InlineData("--compress")]
+    public void Parse_CompressFlag_IsAccepted(string flag)
+    {
+        (ParsedCommand? command, ParseFailure? failure) = CommandLineParser.Parse([flag, "host:/src", @"D:\backup"]);
+
+        Assert.Null(failure);
+        Assert.True(command!.Compress);
     }
 
     [Fact]
-    public void Parse_PushWithChecksum_IsRejected()
+    public void Parse_BundledCompressWithRecurse_IsAccepted()
     {
+        (ParsedCommand? command, ParseFailure? failure) = CommandLineParser.Parse(["-rz", @"D:\backup", "host:/dst"]);
+
+        Assert.Null(failure);
+        Assert.Equal(ParsedAction.SshPush, command!.Action);
+        Assert.True(command.Compress);
+        Assert.True(command.Recurse);
+    }
+
+    [Fact]
+    public void Parse_PushWithChecksum_IsAccepted()
+    {
+        // P10: push --checksum is now supported (F_SUM emission) — no longer rejected.
         (ParsedCommand? command, ParseFailure? failure) = CommandLineParser.Parse(["-r", "-c", @"D:\backup", "host:/dst"]);
 
-        Assert.Null(command);
-        Assert.NotNull(failure);
-        Assert.Contains("push", failure!.Message);
+        Assert.Null(failure);
+        Assert.Equal(ParsedAction.SshPush, command!.Action);
+        Assert.True(command.Checksum);
     }
 
     [Fact]
-    public void Parse_PushWithDelete_IsRejected()
+    public void Parse_PushWithDelete_IsAccepted()
     {
+        // P10: push --delete is now supported (MSG_DELETED handling) — no longer rejected.
         (ParsedCommand? command, ParseFailure? failure) =
             CommandLineParser.Parse(["-r", "--delete", @"D:\backup", "host:/dst"]);
 
-        Assert.Null(command);
-        Assert.NotNull(failure);
-        Assert.Contains("push", failure!.Message);
+        Assert.Null(failure);
+        Assert.Equal(ParsedAction.SshPush, command!.Action);
+        Assert.True(command.Delete);
     }
 
     [Fact]

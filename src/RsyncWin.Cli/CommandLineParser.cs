@@ -33,6 +33,8 @@ internal sealed record ParsedCommand(
     bool Archive,
     bool Checksum,
     bool Delete,
+    bool Secluded,
+    bool Compress,
     string? RshOverride,
     string? Source,
     string? Dest,
@@ -52,6 +54,8 @@ internal static class CommandLineParser
         bool archive = false;
         bool checksum = false;
         bool delete = false;
+        bool secluded = false;
+        bool compress = false;
         var positionals = new List<string>();
 
         for (int i = 0; i < args.Length; i++)
@@ -85,8 +89,11 @@ internal static class CommandLineParser
             }
             else if (arg is "-s" or "--secluded-args" or "--protect-args")
             {
-                return (null, new ParseFailure(
-                    "rsyncwin: --secluded-args is not implemented yet (planned P10); remote paths with spaces may be split by the remote shell"));
+                secluded = true;
+            }
+            else if (arg is "-z" or "--compress")
+            {
+                compress = true;
             }
             else if (arg.Length > 2 && arg[0] == '-' && arg[1] == '-')
             {
@@ -105,9 +112,8 @@ internal static class CommandLineParser
                         case 't': break; // PreserveTimes already defaults to true
                         case 'a': archive = true; break;
                         case 'c': checksum = true; break;
-                        case 's':
-                            return (null, new ParseFailure(
-                                "rsyncwin: --secluded-args is not implemented yet (planned P10); remote paths with spaces may be split by the remote shell"));
+                        case 's': secluded = true; break;
+                        case 'z': compress = true; break;
                         default:
                             return (null, new ParseFailure($"rsyncwin: unsupported option -{flag}"));
                     }
@@ -135,7 +141,7 @@ internal static class CommandLineParser
             }
             else if (listEndpoint!.Module.Length == 0)
             {
-                return (new ParsedCommand(ParsedAction.DaemonList, recurse, archive, checksum, delete, rshOverride, null, null, listEndpoint), null);
+                return (new ParsedCommand(ParsedAction.DaemonList, recurse, archive, checksum, delete, secluded, compress, rshOverride, null, null, listEndpoint), null);
             }
         }
 
@@ -172,15 +178,10 @@ internal static class CommandLineParser
 
             if (sourceIsDaemon)
             {
-                return (new ParsedCommand(ParsedAction.DaemonPull, recurse, archive, checksum, delete, rshOverride, null, dest, sourceDaemon), null);
+                return (new ParsedCommand(ParsedAction.DaemonPull, recurse, archive, checksum, delete, secluded, compress, rshOverride, null, dest, sourceDaemon), null);
             }
 
-            if (checksum)
-                return (null, new ParseFailure("rsyncwin: --checksum is not supported for push yet (P10)"));
-            if (delete)
-                return (null, new ParseFailure("rsyncwin: --delete is not supported for push yet (P10)"));
-
-            return (new ParsedCommand(ParsedAction.DaemonPush, recurse, archive, false, false, rshOverride, source, null, destDaemon), null);
+            return (new ParsedCommand(ParsedAction.DaemonPush, recurse, archive, checksum, delete, secluded, compress, rshOverride, source, null, destDaemon), null);
         }
 
         // rsync's rule: the FIRST ':' splits host from path, applied to both sides — whichever one
@@ -190,17 +191,10 @@ internal static class CommandLineParser
         bool destIsRemote = IsRemoteSpec(dest);
 
         if (sourceIsRemote && !destIsRemote)
-            return (new ParsedCommand(ParsedAction.SshPull, recurse, archive, checksum, delete, rshOverride, source, dest, null), null);
+            return (new ParsedCommand(ParsedAction.SshPull, recurse, archive, checksum, delete, secluded, compress, rshOverride, source, dest, null), null);
 
         if (destIsRemote && !sourceIsRemote)
-        {
-            if (checksum)
-                return (null, new ParseFailure("rsyncwin: --checksum is not supported for push yet (P10)"));
-            if (delete)
-                return (null, new ParseFailure("rsyncwin: --delete is not supported for push yet (P10)"));
-
-            return (new ParsedCommand(ParsedAction.SshPush, recurse, archive, false, false, rshOverride, source, dest, null), null);
-        }
+            return (new ParsedCommand(ParsedAction.SshPush, recurse, archive, checksum, delete, secluded, compress, rshOverride, source, dest, null), null);
 
         return (null, new ParseFailure(
             sourceIsRemote

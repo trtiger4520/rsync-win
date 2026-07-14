@@ -315,6 +315,103 @@ sshcap "ssh31-push-nsec2" --protocol=31 -rt --no-inc-recursive /t/nsrc/ fake:/t/
 } > "$OUT/ssh31-push-nsec1/nsec-manifest.txt"
 
 # ---------------------------------------------------------------------------
+# 4b. P10 ssh captures: --secluded-args (-s), push --checksum/--delete, -z.
+# ---------------------------------------------------------------------------
+
+# --secluded-args (-s): the file args are held back from the server argv and sent as a
+# NUL-terminated list BEFORE the version int32 -- "rsync\0.\0<remote-path>\0\0" (spacepath is the
+# cleanest to decode). Only the remote-side path is sent; spaces are preserved verbatim.
+rm -rf /t/pull && mkdir -p /t/pull
+sshcap "ssh31-secluded-pull" --protocol=31 -rt -s --no-inc-recursive fake:/t/tree/ /t/pull/
+rm -rf /t/spushdst && mkdir -p /t/spushdst
+sshcap "ssh31-secluded-push" --protocol=31 -rt -s --no-inc-recursive /t/tree/ fake:/t/spushdst/
+mkdir -p "/t/space dir"
+printf 'spaced\n' > "/t/space dir/file.txt"
+touch -d '2021-06-15 12:00:00' "/t/space dir/file.txt" "/t/space dir"
+rm -rf /t/pull2 && mkdir -p /t/pull2
+sshcap "ssh31-secluded-spacepath" --protocol=31 -rt -s --no-inc-recursive "fake:/t/space dir/" /t/pull2/
+
+# Push --checksum (-c): our sender appends a 16-byte xxh128 F_SUM to every regular-file flist entry.
+rm -rf /t/pcdst && mkdir -p /t/pcdst
+sshcap "ssh31-push-checksum" --protocol=31 -rtc --no-inc-recursive /t/tree/ fake:/t/pcdst/
+
+# Push --delete: the remote receiver deletes extraneous entries and reports each via a MSG_DELETED
+# mux frame (tag 0x6c), right after the seed, deepest-first -- NO del-stats block on a default
+# (delete-during) push. --delete also adds the empty filter list (int32 0) to the sender's c2s.
+rm -rf /t/pdsrc /t/pddst
+mkdir -p /t/pdsrc/keepdir
+printf 'keep one\n' > /t/pdsrc/keep1.txt
+printf 'keep two\n' > /t/pdsrc/keepdir/keep2.txt
+touch -d '2021-06-15 12:00:00' /t/pdsrc/keep1.txt /t/pdsrc/keepdir/keep2.txt /t/pdsrc/keepdir /t/pdsrc
+mkdir -p /t/pddst/keepdir /t/pddst/extradir
+printf 'keep one\n' > /t/pddst/keep1.txt
+printf 'keep two\n' > /t/pddst/keepdir/keep2.txt
+printf 'extraneous\n' > /t/pddst/extra.txt
+printf 'inside extra\n' > /t/pddst/extradir/inside.txt
+touch -d '2021-06-15 12:00:00' /t/pddst/keep1.txt /t/pddst/keepdir/keep2.txt /t/pddst/keepdir \
+      /t/pddst/extra.txt /t/pddst/extradir/inside.txt /t/pddst/extradir
+sshcap "ssh31-push-delete" --protocol=31 -rt --delete --no-inc-recursive /t/pdsrc/ fake:/t/pddst/
+
+# -z compression. A mixed tree: a highly compressible repeat file, a run of 'A', an incompressible
+# random blob, a small compressible file -- exercises both the deflated and stored-block paths.
+mkdir -p /t/ztree
+yes 'the quick brown fox jumps over the lazy dog' | head -c 200000 > /t/ztree/repeat.txt
+head -c 100000 /dev/zero | tr '\0' 'A'                              > /t/ztree/runs.txt
+detbytes 65536 zincompressible                                     > /t/ztree/random.bin
+printf 'small compressible payload aaaaaaaaaaaaaaaaaaaa\n'          > /t/ztree/small.txt
+touch -d '2021-06-15 12:00:00' /t/ztree/repeat.txt /t/ztree/runs.txt /t/ztree/random.bin /t/ztree/small.txt /t/ztree
+
+# Plain -z negotiates zstd (NOT deflate -- BCL cannot decode it): the client offers a compression
+# vstring "zstd lz4 zlibx zlib" right after the checksum vstring. Kept as the "trap" reference.
+rm -rf /t/zpull && mkdir -p /t/zpull
+sshcap "ssh31-pull-z-default" --protocol=31 -rt -z --no-inc-recursive fake:/t/ztree/ /t/zpull/
+
+# Forced zlibx (--new-compress): NO compression vstring; the choice rides the server arg. This is
+# the mode we implement (raw deflate, matched blocks excluded from the window). Full transfer.
+rm -rf /t/zpull && mkdir -p /t/zpull
+sshcap "ssh31-pull-z-zlibx" --protocol=31 -rt -z --compress-choice=zlibx --no-inc-recursive fake:/t/ztree/ /t/zpull/
+( cd /t/ztree && find . -type f -print0 | sort -z | xargs -0 -r sha256sum ) > "$OUT/ssh31-pull-z-zlibx/src-tree.sha256"
+
+# Forced old zlib (--old-compress): inserts matched-block bytes into the deflate window (needs a
+# window-insert primitive the BCL lacks) -- kept as the reference for why we do NOT use it. For a
+# full transfer with no matches it is byte-identical to zlibx (demuxed).
+rm -rf /t/zpull && mkdir -p /t/zpull
+sshcap "ssh31-pull-z-zlib" --protocol=31 -rt -z --compress-choice=zlib --no-inc-recursive fake:/t/ztree/ /t/zpull/
+
+# zlibx DELTA pull: basis differs at offsets 1000 and 150000 -> matched blocks (TOKEN_REL/TOKENRUN_REL)
+# interleaved with compressed literals (DEFLATED_DATA). Pins the relative-block token arithmetic.
+rm -rf /t/zdelta && mkdir -p /t/zdelta
+cp /t/tree/b003_300k.bin /t/zdelta/b003_300k.bin
+printf 'XXXXXXXX' | dd of=/t/zdelta/b003_300k.bin bs=1 seek=1000 conv=notrunc 2>/dev/null
+printf 'YYYY'     | dd of=/t/zdelta/b003_300k.bin bs=1 seek=150000 conv=notrunc 2>/dev/null
+touch -d '2019-01-01 00:00:00' /t/zdelta/b003_300k.bin
+sshcap "ssh31-pull-z-delta" --protocol=31 -t -z --compress-choice=zlibx --no-whole-file fake:/t/tree/b003_300k.bin /t/zdelta/
+cp /t/zdelta/b003_300k.bin "$OUT/ssh31-pull-z-delta/result.bin" 2>/dev/null || true
+
+# zlibx CROSS-RUN pull (protocol-reviewer finding 2): two literal runs sharing the SAME 256-B marker,
+# planted far apart (matched blocks between) but close in DEFLATE-input distance (zlibx excludes
+# matched blocks from the 32 KB window). rsync's continuous deflate sender back-references run A from
+# run B -> a per-run inflate throws; only a CONTINUOUS inflate reconstructs it. Pins that regression.
+detbytes 256 crossrun-marker > /t/marker
+rm -rf /t/zcr-dst && mkdir -p /t/zcr-dst
+detbytes 300000 zcrossrun > /t/src.bin
+dd of=/t/src.bin bs=1 seek=1000   conv=notrunc if=/t/marker 2>/dev/null
+dd of=/t/src.bin bs=1 seek=150000 conv=notrunc if=/t/marker 2>/dev/null
+touch -d '2021-06-15 12:00:00' /t/src.bin
+detbytes 300000 zcrossrun > /t/zcr-dst/src.bin   # pristine basis (no markers) -> both regions are literals
+touch -d '2019-01-01 00:00:00' /t/zcr-dst/src.bin
+mkdir -p "$OUT/ssh31-pull-z-crossrun"
+cp /t/zcr-dst/src.bin "$OUT/ssh31-pull-z-crossrun/basis.bin"
+sshcap "ssh31-pull-z-crossrun" --protocol=31 -t -z --compress-choice=zlibx --no-whole-file fake:/t/src.bin /t/zcr-dst/
+cp /t/zcr-dst/src.bin "$OUT/ssh31-pull-z-crossrun/result.bin"
+sha256sum /t/src.bin | awk '{print $1}' > "$OUT/ssh31-pull-z-crossrun/source.sha256"
+
+# zlibx PUSH (our sender compresses; reference only -- deflate output is implementation-defined, so
+# this is NOT a byte-exact send gate, only a shape reference).
+rm -rf /t/zpushdst && mkdir -p /t/zpushdst
+sshcap "ssh31-push-z-zlibx" --protocol=31 -rt -z --compress-choice=zlibx --no-inc-recursive /t/ztree/ fake:/t/zpushdst/
+
+# ---------------------------------------------------------------------------
 # 5. Daemon transport captures via socat tap (P8).
 # ---------------------------------------------------------------------------
 mkdir -p /t/dpush

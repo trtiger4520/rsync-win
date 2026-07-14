@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Buffers.Binary;
 using System.IO.Pipelines;
 using System.Text;
+using RsyncWin.Protocol.Delta;
 using RsyncWin.Protocol.Wire;
 
 namespace RsyncWin.Protocol.Session;
@@ -15,6 +16,12 @@ public sealed record HandshakeOptions
     /// <summary>Space-separated checksum-choice list. Must contain only implemented names.</summary>
     public string ChecksumOffer { get; init; } = ChecksumNegotiator.DefaultOffer;
 
+    /// <summary>Token-stream compression to run (<c>-z</c>). We force <see cref="CompressionMethod.Zlibx"/>
+    /// via the <c>--new-compress</c> server option, which sends NO compression vstring — so this
+    /// changes no handshake bytes, only what <see cref="SessionContext.Compression"/> records for the
+    /// transfer phase.</summary>
+    public CompressionMethod Compression { get; init; } = CompressionMethod.None;
+
     /// <summary>
     /// Set for a daemon (<c>rsync://</c>) session: the protocol version already agreed via the
     /// textual <c>@RSYNCD: &lt;ver&gt;.&lt;sub&gt;</c> greeting. When set, the binary version-int
@@ -23,6 +30,18 @@ public sealed record HandshakeOptions
     /// Everything downstream — compat flags, checksum negotiation, the seed — is unchanged.
     /// </summary>
     public int? PreNegotiatedProtocolVersion { get; init; }
+
+    /// <summary>
+    /// The held-back remote-side file args for a <c>--secluded-args</c> (<c>-s</c>) session — the
+    /// same paths <see cref="ServerArgvBuilder"/> would otherwise place after the <c>.</c>
+    /// separator. When non-null (ssh only), a NUL-terminated list is written <em>before</em> the
+    /// version int32: <c>rsync\0</c> (argv[0]), <c>.\0</c> (the dot-arg separator), each path
+    /// NUL-terminated, then a lone <c>\0</c> (empty string) to close the list. Pinned byte-exact by
+    /// <c>ssh31-secluded-spacepath</c>. Ignored on a daemon session
+    /// (<see cref="PreNegotiatedProtocolVersion"/> set) — the daemon carries no version int, so
+    /// there is nowhere to put a pre-version list.
+    /// </summary>
+    public IReadOnlyList<string>? SecludedArgs { get; init; }
 }
 
 /// <summary>
@@ -75,6 +94,12 @@ public static class HandshakeRunner
             ArgumentOutOfRangeException.ThrowIfLessThan(options.AdvertisedProtocol, RsyncConstants.MinProtocolVersion);
             ArgumentOutOfRangeException.ThrowIfGreaterThan(options.AdvertisedProtocol, RsyncConstants.ProtocolVersion);
 
+            // --secluded-args (-s): the file args were held back from the ssh command line and travel
+            // as a NUL-terminated list right before the version int32 (ssh31-secluded-spacepath):
+            // "rsync\0" (argv[0]) + ".\0" (dot separator) + each remote path "\0" + a lone "\0".
+            if (options.SecludedArgs is { } secluded)
+                WriteSecludedArgList(output, secluded);
+
             WriteInt32(output, options.AdvertisedProtocol);
             await output.FlushAsync(cancellationToken);
 
@@ -123,6 +148,7 @@ public static class HandshakeRunner
             ChecksumSeed = seed,
             TransferChecksum = checksum,
             FileChecksum = checksum,
+            Compression = options.Compression,
         };
     }
 
@@ -130,6 +156,32 @@ public static class HandshakeRunner
     {
         BinaryPrimitives.WriteInt32LittleEndian(output.GetSpan(4), value);
         output.Advance(4);
+    }
+
+    /// <summary>
+    /// Writes the pre-version secluded-args list (<c>docs/wire-notes.md</c>, resolved "secluded"
+    /// open question): <c>rsync\0</c>, then <c>.\0</c>, then each held-back remote path
+    /// NUL-terminated, then a lone <c>\0</c> (empty string) to terminate. argv[0] is the literal
+    /// synthetic <c>rsync</c> token, and the dot-arg always precedes the paths.
+    /// </summary>
+    private static void WriteSecludedArgList(PipeWriter output, IReadOnlyList<string> paths)
+    {
+        WriteNulString(output, "rsync");
+        WriteNulString(output, ".");
+        foreach (string path in paths)
+            WriteNulString(output, path);
+        // Lone NUL (empty string) terminates the list.
+        output.GetSpan(1)[0] = 0;
+        output.Advance(1);
+    }
+
+    private static void WriteNulString(PipeWriter output, string value)
+    {
+        int byteCount = Encoding.UTF8.GetByteCount(value);
+        Span<byte> span = output.GetSpan(byteCount + 1);
+        int written = Encoding.UTF8.GetBytes(value, span);
+        span[written] = 0;
+        output.Advance(written + 1);
     }
 
     private static void WriteVstring(PipeWriter output, string value)

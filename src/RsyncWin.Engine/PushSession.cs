@@ -43,11 +43,14 @@ public static class PushSession
         long MatchedBytes,
         IReadOnlyList<string> FailedFiles,
         IReadOnlyList<string> OversizeFiles,
-        IReadOnlyList<ServerMessage> ServerMessages);
+        IReadOnlyList<ServerMessage> ServerMessages,
+        IReadOnlyList<string> DeletedPaths);
 
     /// <summary>Tags a push client (sender) may legitimately receive. Unlike a pull client, a push
     /// client never receives <see cref="MessageTag.NoSend"/> or <see cref="MessageTag.IoError"/> —
-    /// those are things the SENDER emits, and here we are the sender.</summary>
+    /// those are things the SENDER emits, and here we are the sender. Under <c>--delete</c> the
+    /// remote receiver reports each deletion via <see cref="MessageTag.Deleted"/>
+    /// (<c>ssh31-push-delete</c>: MSG_DELETED frames right after the seed, no del-stats block).</summary>
     private static readonly IReadOnlySet<MessageTag> PushClientTags = new HashSet<MessageTag>
     {
         MessageTag.Data,
@@ -58,6 +61,7 @@ public static class PushSession
         MessageTag.IoTimeout,
         MessageTag.Noop,
         MessageTag.ErrorExit,
+        MessageTag.Deleted,
     };
 
     /// <param name="entries">
@@ -87,8 +91,13 @@ public static class PushSession
         var serverMessages = new List<ServerMessage>();
         reader.MessageReceived = (tag, payload) => serverMessages.Add(new ServerMessage(tag, payload));
 
-        // No filter list on a push (docs/wire-notes.md "Push direction"): the first c2s frame
-        // payload is the flist itself — not even the pull side's terminating int32 0.
+        // Filter list: plain push sends NONE (docs/wire-notes.md "Push direction"), but --delete adds
+        // the empty filter list int32 0 to the c2s (ssh31-push-delete: "00 00 00 00" precedes the
+        // flist). Framed — c2s is multiplexed at protocol >= 30.
+        if (serverArgs.Delete)
+            writer.Write([0, 0, 0, 0]);
+
+        int digestLength = StrongChecksum.DigestLength(session.TransferChecksum);
         var options = new FileListOptions
         {
             Protocol = session.Protocol,
@@ -98,8 +107,19 @@ public static class PushSession
             PreserveDevices = serverArgs.PreserveDevices,
             PreserveSpecials = serverArgs.PreserveDevices,
             Id0Names = (session.CompatFlags & RsyncConstants.CompatId0Names) != 0,
+            Checksum = serverArgs.Checksum,
+            ChecksumLength = serverArgs.Checksum ? digestLength : 0,
         };
-        FileListWriter.Write(writer, [.. entries.Select(e => e.Wire)], options);
+
+        // Under --checksum the flist carries a whole-file F_SUM on every regular-file entry
+        // (docs/flist-spec.md §14; ssh31-push-checksum). The pure core does no file I/O, so we
+        // precompute each sum here (unseeded xxh128, byte-identical to the §3 transfer trailer) and
+        // attach it to the entry before FileListWriter emits it.
+        IReadOnlyList<FileEntry> wireEntries = serverArgs.Checksum
+            ? await ComputeFlistChecksumsAsync(entries, session, cancellationToken)
+            : [.. entries.Select(e => e.Wire)];
+
+        FileListWriter.Write(writer, wireEntries, options);
         await writer.FlushAsync(cancellationToken);
 
         // Both ends sort after receipt; the ndx space is over the SORTED list, not send order
@@ -148,6 +168,15 @@ public static class PushSession
             throw new ProtocolException(ex.ExitCode, string.IsNullOrEmpty(serverText) ? ex.Message : serverText);
         }
 
+        // MSG_DELETED payloads are the deleted path bytes, with a trailing NUL for directories
+        // (ssh31-push-delete). Surface them for the CLI's "deleting <path>" report.
+        List<string> deletedPaths =
+        [
+            .. serverMessages
+                .Where(m => m.Tag == MessageTag.Deleted)
+                .Select(m => System.Text.Encoding.UTF8.GetString(m.Payload).TrimEnd('\0')),
+        ];
+
         return new Result(
             session,
             sender.FilesSent,
@@ -156,7 +185,59 @@ public static class PushSession
             sender.MatchedBytes,
             sender.FailedFiles,
             sender.OversizeFiles,
-            serverMessages);
+            serverMessages,
+            deletedPaths);
+    }
+
+    /// <summary>
+    /// Precomputes the whole-file F_SUM for every regular-file entry under <c>--checksum</c> and
+    /// returns the entries with <see cref="FileEntry.FlistChecksum"/> populated (directories and any
+    /// non-regular entries pass through untouched — they carry no F_SUM). The sum is the negotiated
+    /// transfer checksum computed unseeded over the whole file, byte-identical to the transfer
+    /// trailer (docs/transfer-spec.md §3), streamed in chunks so a large source is never fully
+    /// buffered just to hash it.
+    /// </summary>
+    private static async Task<IReadOnlyList<FileEntry>> ComputeFlistChecksumsAsync(
+        IReadOnlyList<EnumeratedEntry> entries, SessionContext session, CancellationToken cancellationToken)
+    {
+        int digestLength = StrongChecksum.DigestLength(session.TransferChecksum);
+        var result = new List<FileEntry>(entries.Count);
+        byte[] buffer = new byte[RsyncConstants.ChunkSize];
+        foreach (EnumeratedEntry entry in entries)
+        {
+            if (entry.Wire.FileType != FileEntry.RegularFile)
+            {
+                result.Add(entry.Wire);
+                continue;
+            }
+
+            byte[] flistSum;
+            try
+            {
+                WholeFileChecksum hasher = StrongChecksum.CreateFileSum(
+                    session.TransferChecksum, session.ChecksumSeed, session.Protocol);
+                await using FileStream stream = File.OpenRead(entry.AbsolutePath);
+                int read;
+                while ((read = await stream.ReadAsync(buffer, cancellationToken)) > 0)
+                    hasher.Append(buffer.AsSpan(0, read));
+
+                byte[] sum = new byte[16];
+                int length = hasher.Finish(sum);
+                flistSum = sum[..length];
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                // A source file locked or vanished between enumeration and this precompute (routine
+                // on Windows: open PST/DB/log files). rsync emits a zero F_SUM and carries on — it
+                // will mismatch the server's basis, so the file is requested, and the reply path's
+                // own read failure (ReplyAsync's catch) records it in FailedFiles → exit 23. Never
+                // abort the whole flist over one unreadable file.
+                flistSum = new byte[digestLength];
+            }
+
+            result.Add(entry.Wire with { FlistChecksum = flistSum });
+        }
+        return result;
     }
 
     /// <summary>
@@ -334,7 +415,8 @@ public static class PushSession
 
             List<BlockSignature> blockSums = [.. request.BlockSums!.Select(b => new BlockSignature(b.WeakSum, b.StrongSum))];
             MatchResult match = MatchSearcher.Search(
-                writer, source, head, blockSums, session.TransferChecksum, session.ChecksumSeed, session.ChecksumSeedFix);
+                writer, source, head, blockSums, session.TransferChecksum, session.ChecksumSeed,
+                session.ChecksumSeedFix, session.Compression);
 
             // Whole-file trailer: "the entire new file content in output order" (docs/transfer-spec.md
             // §3) is, for the sender, simply its own source bytes — a matched block's content is by

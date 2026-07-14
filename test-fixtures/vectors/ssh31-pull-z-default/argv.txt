@@ -1,0 +1,6 @@
+rsync
+--server
+--sender
+-trze.LsfxCIvu
+.
+/t/ztree/

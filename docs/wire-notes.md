@@ -145,6 +145,30 @@ to the per-file retry-then-exit-23 lane; wire mtimes clamp to the settable Win32
 - Our v1 offer: `md5` (BCL) now, `xxh64` (System.IO.Hashing, LE emission via `HashToUInt64` +
   `BinaryPrimitives`) once golden-vectored in P4.
 
+## Compression negotiation (`-z`) — measured, rsync 3.4.3 (P10)
+
+- **Plain `-z` is a trap: it negotiates `zstd`.** `negotiate_the_strings()` sends a compression
+  vstring right AFTER the checksum vstring (both directions): client offer `zstd lz4 zlibx zlib`,
+  server reply `zstd lz4 zlibx zlib none`, first common = **zstd**. The BCL has no zstd codec, so we
+  must never leave compression to negotiation.
+- **We force `zlibx`** (`--compress-choice=zlibx` → the server arg `--new-compress`). Forcing a choice
+  sends **no compression vstring at all** — the handshake bytes are byte-identical to a non-`-z`
+  session, and the mode rides only `--new-compress` in the server argv (the `z` bundle letter is
+  absent). `--old-compress` (zlib) instead keeps the `z` letter. Pinned by `ssh31-pull-z-{default,
+  zlibx,zlib}`.
+- **Why zlibx and not zlib**: both are raw deflate (windowBits −15, `DeflateStream`), but the old
+  `zlib` mode inserts matched-block bytes into the deflate window (so a later literal can back-
+  reference matched data) — that needs a "insert into the window without emitting output" primitive
+  (`Z_INSERT_ONLY`) the BCL lacks. `zlibx` ("new") excludes matched blocks from the window, so the
+  receiver copies them from the basis and feeds only DEFLATED_DATA payloads to `DeflateStream`. For a
+  full transfer (no matches) the two are byte-identical (demuxed). Token grammar + framing:
+  `docs/transfer-spec.md` §2a. `DeflateStream.Flush()` emits exactly the `Z_SYNC_FLUSH` marker
+  (`… 00 00 ff ff`) rsync strips on the wire — verified, which is what makes the encoder side work.
+- Both directions live-gated (`SshP10InteropTests`): a real rsync `-z` pull reconstructs
+  byte-identically (decoder), and a real rsync receiver reconstructs our `-z` push byte-identically +
+  re-push transfers nothing (encoder). Byte-exact SEND replay is impossible (deflate output is
+  implementation-defined), so the push gate is semantic, not byte-equality.
+
 ## Interop substrate (this machine)
 
 Docker is the substrate; rsync is never installed on the Windows host. Verified working:
@@ -332,13 +356,32 @@ Further pins from the P7 decisive captures (`ssh31-push-uptodate` / `-delta` / `
 - ~~Exact `server_options()` bundled short-flag set~~ — resolved (7 argv goldens + compat.c read)
 - ~~Double-`NDX_DONE` at a protocol-31 phase boundary~~ — resolved (P4 capture; full DONE map in
   `transfer-spec.md`)
-- `--secluded-args` posture for remote paths with spaces/metacharacters — **deferred to P10**. The
-  format IS observed (P9 residual capture, ssh `-s`): the server argv drops the `. <paths>` block
-  entirely (`-stre.LsfxCIvu`, `s` first in the bundle), and the held-back file args are sent as a
-  **NUL-terminated list BEFORE the version int32** — e.g. `rsync\0.\0/t/sec src/\0\0` (empty string
-  terminates). The leading `rsync`/argv[0] token and the daemon interaction are not fully decoded, so
-  P9 recognizes `-s`/`--secluded-args`/`--protect-args` and rejects them cleanly (exit 1) rather than
-  guess a pre-handshake protocol. Pin the argv[0] token + daemon case, then implement, in P10.
+- ~~`--secluded-args` posture for remote paths with spaces/metacharacters~~ — **resolved (P10,
+  `ssh31-secluded-pull`/`-push`/`-spacepath`)**. The ssh server argv drops the `. <paths>` block
+  entirely (`-stre.LsfxCIvu`, `s` first in the bundle), and the held-back **remote-side** file args
+  are sent as a NUL-terminated list BEFORE the version int32: byte-exact `rsync\0` (argv[0], a
+  literal synthetic token) + `.\0` (the dot-arg separator) + each remote path `\0` + a lone `\0`
+  (empty string) to terminate. Only the remote side's paths appear (pull=source, push=dest); local
+  paths stay off the wire; spaces are preserved verbatim (the point of `-s`). Implemented in
+  `HandshakeRunner.WriteSecludedArgList` (ssh only — a daemon session carries no version int, so
+  there is nowhere to place a pre-version list, and its args already go NUL-framed after
+  `@RSYNCD: OK` and so are space-safe without `-s`). `HandshakeOptions.SecludedArgs` /
+  `ServerArgvBuilder.SecludedArgs` drive it; live-gated by `SshP10InteropTests` (spaced remote path
+  pulls byte-identical).
+- **Push `--checksum` F_SUM** (capture-pinned P10, `ssh31-push-checksum`): the client-sender appends
+  the identical 16-byte xxh128 F_SUM (unseeded, `= xfer_sum_len`) to every **regular-file** flist
+  entry as its last field; directories carry none. Byte-identical to the pull-side F_SUM
+  (`flist-spec.md` §14) and to the whole-file transfer trailer. Precomputed in
+  `PushSession.ComputeFlistChecksumsAsync` (pure core does no file I/O) and emitted by `FileListWriter`.
+- **Push `--delete`** (capture-pinned P10, `ssh31-push-delete`): the remote receiver deletes and
+  reports each removed entry via a **MSG_DELETED** mux frame (tag 0x6c = MPLEX_BASE 7 + 101), sent
+  right after the seed and BEFORE the transfer phase, deepest-first (dirs carry a trailing NUL in the
+  payload). There is **no** `NDX_DEL_STATS` block on a default (delete-during) push — the del-stats
+  varint block (`transfer-spec.md` §5) only appears under `--delete-after`/`--delete-delay`/`--stats`,
+  which we never send. `--delete` also adds the empty filter list `00 00 00 00` to the sender's c2s
+  (plain push omits it — resolves the P7 "filters presumably appear under --delete" note). Handled by
+  allowing `MessageTag.Deleted` on the push-client tag set and writing the filter list under
+  `serverArgs.Delete`; live-gated by `SshP10InteropTests`.
 - ~~Phase-0 writes every request before reading any reply~~ — resolved (P5): the request writer and
   reply reader now run as two concurrent loops per phase, handed off through a bounded
   `System.Threading.Channels.Channel<int>` of requested ndx values and joined with `Task.WhenAll`,

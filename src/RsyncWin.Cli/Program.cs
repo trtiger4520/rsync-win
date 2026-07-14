@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using RsyncWin.Cli;
 using RsyncWin.Engine;
 using RsyncWin.Fs;
+using RsyncWin.Protocol.Delta;
 using RsyncWin.Protocol.Mux;
 using RsyncWin.Protocol.Session;
 using RsyncWin.Transport;
@@ -28,10 +29,10 @@ static async Task<int> RunAsync(string[] args)
     return cmd.Action switch
     {
         ParsedAction.DaemonList => await RunDaemonListAsync(cmd.Endpoint!),
-        ParsedAction.SshPull => await RunPullAsync(cmd.Source!, cmd.Dest!, cmd.Recurse, cmd.Archive, cmd.Checksum, cmd.Delete, cmd.RshOverride),
-        ParsedAction.SshPush => await RunPushAsync(cmd.Source!, cmd.Dest!, cmd.Recurse, cmd.Archive, cmd.RshOverride),
-        ParsedAction.DaemonPull => await RunDaemonPullAsync(cmd.Endpoint!, cmd.Dest!, cmd.Recurse, cmd.Archive, cmd.Checksum, cmd.Delete),
-        ParsedAction.DaemonPush => await RunDaemonPushAsync(cmd.Source!, cmd.Endpoint!, cmd.Recurse, cmd.Archive),
+        ParsedAction.SshPull => await RunPullAsync(cmd.Source!, cmd.Dest!, cmd.Recurse, cmd.Archive, cmd.Checksum, cmd.Delete, cmd.Secluded, cmd.Compress, cmd.RshOverride),
+        ParsedAction.SshPush => await RunPushAsync(cmd.Source!, cmd.Dest!, cmd.Recurse, cmd.Archive, cmd.Checksum, cmd.Delete, cmd.Secluded, cmd.Compress, cmd.RshOverride),
+        ParsedAction.DaemonPull => await RunDaemonPullAsync(cmd.Endpoint!, cmd.Dest!, cmd.Recurse, cmd.Archive, cmd.Checksum, cmd.Delete, cmd.Compress),
+        ParsedAction.DaemonPush => await RunDaemonPushAsync(cmd.Source!, cmd.Endpoint!, cmd.Recurse, cmd.Archive, cmd.Checksum, cmd.Delete, cmd.Compress),
         _ => throw new InvalidOperationException($"unhandled parsed action {cmd.Action}"),
     };
 }
@@ -46,11 +47,12 @@ static void PrintUsage()
     Console.Error.WriteLine("       \"[user@]host::module[/path]\" is accepted anywhere \"rsync://host/module[/path]\" is (port always 873)");
     Console.Error.WriteLine("       rsyncwin rsync://[user@]host[:port]/            (list daemon modules — module left empty)");
     Console.Error.WriteLine("       daemon auth password is read from the RSYNC_PASSWORD environment variable");
-    Console.Error.WriteLine("       -c/--checksum and --delete are pull-only for now (P10 will add push support)");
+    Console.Error.WriteLine("       -c/--checksum and --delete work for both pull and push; -s/--secluded-args protects remote paths with spaces");
+    Console.Error.WriteLine("       -z/--compress uses zlibx token compression (pull and push)");
 }
 
 static async Task<int> RunPullAsync(
-    string source, string dest, bool recurse, bool archive, bool checksum, bool delete, string? rshOverride)
+    string source, string dest, bool recurse, bool archive, bool checksum, bool delete, bool secluded, bool compress, string? rshOverride)
 {
     (string? user, string host, string remotePath) = CommandLineParser.SplitRemoteSpec(source);
 
@@ -65,7 +67,19 @@ static async Task<int> RunPullAsync(
         PreserveDevices = archive,
         PreservePerms = archive,
         Checksum = checksum,
+        SecludedArgs = secluded,
+        Compress = compress,
     };
+
+    // -s holds the remote path back from the ssh command line (a pre-handshake NUL list); -z forces
+    // zlibx token compression (no compression string negotiated). Either needs a handshake override.
+    var handshake = secluded || compress
+        ? new HandshakeOptions
+        {
+            SecludedArgs = secluded ? [remotePath] : null,
+            Compression = compress ? CompressionMethod.Zlibx : CompressionMethod.None,
+        }
+        : null;
 
     (OpenSshProcessTransport? transport, int startError) = StartSsh(user, host, serverArgs.Build(), rshOverride);
     if (transport is null)
@@ -76,7 +90,7 @@ static async Task<int> RunPullAsync(
         PullSession.Result result;
         try
         {
-            result = await PullSession.RunAsync(transport, serverArgs, dest, delete: delete);
+            result = await PullSession.RunAsync(transport, serverArgs, dest, handshake: handshake, delete: delete);
         }
         catch (Exception ex) when (ex is ProtocolException or InvalidDataException or IOException or UnauthorizedAccessException)
         {
@@ -102,7 +116,8 @@ static async Task<int> RunPullAsync(
     }
 }
 
-static async Task<int> RunPushAsync(string source, string dest, bool recurse, bool archive, string? rshOverride)
+static async Task<int> RunPushAsync(
+    string source, string dest, bool recurse, bool archive, bool checksum, bool delete, bool secluded, bool compress, string? rshOverride)
 {
     if (archive)
     {
@@ -150,7 +165,21 @@ static async Task<int> RunPushAsync(string source, string dest, bool recurse, bo
         PreserveGroup = archive,
         PreserveDevices = archive,
         PreservePerms = archive,
+        Checksum = checksum,
+        Delete = delete,
+        SecludedArgs = secluded,
+        Compress = compress,
     };
+
+    // -s holds the remote dest path back from the ssh command line (a pre-handshake NUL list); -z
+    // forces zlibx token compression. Either needs a handshake override.
+    var handshake = secluded || compress
+        ? new HandshakeOptions
+        {
+            SecludedArgs = secluded ? [remotePath] : null,
+            Compression = compress ? CompressionMethod.Zlibx : CompressionMethod.None,
+        }
+        : null;
 
     (OpenSshProcessTransport? transport, int startError) = StartSsh(user, host, serverArgs.Build(), rshOverride);
     if (transport is null)
@@ -161,7 +190,7 @@ static async Task<int> RunPushAsync(string source, string dest, bool recurse, bo
         PushSession.Result result;
         try
         {
-            result = await PushSession.RunAsync(transport, serverArgs, entries);
+            result = await PushSession.RunAsync(transport, serverArgs, entries, handshake: handshake);
         }
         catch (Exception ex) when (ex is ProtocolException or InvalidDataException or IOException or UnauthorizedAccessException)
         {
@@ -175,6 +204,8 @@ static async Task<int> RunPushAsync(string source, string dest, bool recurse, bo
         foreach (ServerMessage message in result.ServerMessages)
             if (message.Tag is MessageTag.Error or MessageTag.ErrorXfer or MessageTag.Warning)
                 Console.Error.WriteLine($"remote: {message.Text}");
+        foreach (string path in result.DeletedPaths)
+            Console.Error.WriteLine($"deleting {path}");
         Console.Error.WriteLine(
             $"files sent: {result.FilesSent}, literal bytes: {result.LiteralBytes}, matched bytes: {result.MatchedBytes}");
 
@@ -235,7 +266,7 @@ static void ReportPruneResult(PruneResult prune, bool pruneSkippedDueToIoError)
 }
 
 static async Task<int> RunDaemonPullAsync(
-    DaemonEndpoint endpoint, string dest, bool recurse, bool archive, bool checksum, bool delete)
+    DaemonEndpoint endpoint, string dest, bool recurse, bool archive, bool checksum, bool delete, bool compress)
 {
     var serverArgs = new ServerArgvBuilder
     {
@@ -248,6 +279,7 @@ static async Task<int> RunDaemonPullAsync(
         PreserveDevices = archive,
         PreservePerms = archive,
         Checksum = checksum,
+        Compress = compress,
     };
 
     (DaemonTcpTransport? transport, DaemonPreambleResult? preamble, int connectError) =
@@ -260,7 +292,7 @@ static async Task<int> RunDaemonPullAsync(
         foreach (string line in preamble.MotdLines)
             Console.WriteLine(line);
 
-        var handshake = new HandshakeOptions { PreNegotiatedProtocolVersion = preamble.Protocol };
+        var handshake = new HandshakeOptions { PreNegotiatedProtocolVersion = preamble.Protocol, Compression = compress ? CompressionMethod.Zlibx : CompressionMethod.None };
 
         PullSession.Result result;
         try
@@ -286,7 +318,8 @@ static async Task<int> RunDaemonPullAsync(
     }
 }
 
-static async Task<int> RunDaemonPushAsync(string source, DaemonEndpoint endpoint, bool recurse, bool archive)
+static async Task<int> RunDaemonPushAsync(
+    string source, DaemonEndpoint endpoint, bool recurse, bool archive, bool checksum, bool delete, bool compress)
 {
     if (archive)
     {
@@ -327,6 +360,9 @@ static async Task<int> RunDaemonPushAsync(string source, DaemonEndpoint endpoint
         PreserveGroup = archive,
         PreserveDevices = archive,
         PreservePerms = archive,
+        Checksum = checksum,
+        Delete = delete,
+        Compress = compress,
     };
 
     (DaemonTcpTransport? transport, DaemonPreambleResult? preamble, int connectError) =
@@ -339,7 +375,7 @@ static async Task<int> RunDaemonPushAsync(string source, DaemonEndpoint endpoint
         foreach (string line in preamble.MotdLines)
             Console.WriteLine(line);
 
-        var handshake = new HandshakeOptions { PreNegotiatedProtocolVersion = preamble.Protocol };
+        var handshake = new HandshakeOptions { PreNegotiatedProtocolVersion = preamble.Protocol, Compression = compress ? CompressionMethod.Zlibx : CompressionMethod.None };
 
         PushSession.Result result;
         try
@@ -358,6 +394,8 @@ static async Task<int> RunDaemonPushAsync(string source, DaemonEndpoint endpoint
         foreach (ServerMessage message in result.ServerMessages)
             if (message.Tag is MessageTag.Error or MessageTag.ErrorXfer or MessageTag.Warning)
                 Console.Error.WriteLine($"remote: {message.Text}");
+        foreach (string path in result.DeletedPaths)
+            Console.Error.WriteLine($"deleting {path}");
         Console.Error.WriteLine(
             $"files sent: {result.FilesSent}, literal bytes: {result.LiteralBytes}, matched bytes: {result.MatchedBytes}");
 

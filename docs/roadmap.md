@@ -24,10 +24,15 @@
 | P7 | Push (sender role) | **DONE** | `P7 complete` commit — four full-stream c2s replay gates byte-identical (`ssh31-push-rt`/`-uptodate`/`-delta`/`-redo`); MatchSearcher token streams capture-exact incl. redo; live gates 4/4: tree SHA-identical server-side, re-push transfers nothing with real NTFS nsec mtimes, delta literal/matched EXACTLY equal to real rsync `--stats`, vanished source → exit 23 not hang; 3 adversarial findings fixed |
 | P8 | Daemon transport (`rsync://`) | **DONE** | `P8 complete` commit — preamble byte-identical to captured client (greeting/auth/argv) across 10 daemon vectors; auth digest recipe computationally reproduced (md5, proto 31 and 29); post-OK stream `cmp`-identical to ssh minus version ints; 13 hermetic daemon replays + live gates 8/8 (anon+auth pull, module listing, push byte-identical, re-push transfers nothing, @ERROR/readonly exit codes); 4 adversarial findings fixed |
 | P9 | Polish (`--checksum`, `--delete` pull, flag surface, exit codes) | **DONE** | `P9 complete` commit — `--checksum` flist F_SUM capture-pinned (`ssh31-pull-checksum`: 16B xxh128, unseeded, regular-files-only, last field) + generator decision 0x0008/0x8002/0xA002 (hermetic byte-exact c2s replay + decision unit tests + live attribute-only/content-change gates); `--delete` pull is **local-only** (`ssh31-pull-delete`: zero wire del-stats either direction) via `LocalTreePruner` (reparse-point-safe, io_error-suppressed incl. mid-session `MSG_IO_ERROR`); drive-letter/UNC disambiguation, `-c`/`--delete`/long-form/unknown-flag handling, exit-code completeness 0/2/3/4/5/10/11/12/23/24/30 + ssh-255-before-12 ordering fix (`ExitCodeMapper`, one test per code); 394 hermetic + 23 live interop green; adversarial review found no code bugs, 2 test-strength gaps closed |
-| P10 | Compression (`-z`) + `--secluded-args` + push `--checksum`/`--delete` | **NEXT** | — |
+| P10 | Compression (`-z`) + `--secluded-args` + push `--checksum`/`--delete` | **DONE** | `P10 complete` commit — `--secluded-args` pre-version NUL arg-list byte-exact (`ssh31-secluded-*`); push `--checksum` F_SUM emission (write→read round-trip + live re-push-nothing) and push `--delete` via MSG_DELETED tag 0x6c (no del-stats, empty filter list added), both live-gated; **`-z` zlibx** codec (forced `--new-compress`, no zstd/zlib) — decoder capture-pinned byte-exact against `ssh31-pull-z-{zlibx,delta}`, encoder↔decoder round-trip, both directions live byte-identical + re-transfers-nothing; 402 hermetic + interop green; adversarial review clean |
 
-Estimated effort remaining (active agent working hours, from P1–P9 measured pace):
-P10 ≈ 4–8 h (`-z` is a new compressed-token codec + compression-string negotiation — the bulk).
+**Development complete.** P0–P10 all DONE. The client does pull and push over ssh.exe and the rsync
+daemon, with delta transfers, `--checksum`, `--delete`, `--secluded-args`, and `-z` (zlibx)
+compression, interoperating byte-for-byte with stock rsync 3.4.3. Scoped-out-by-design items (each
+with a written rationale): protocol 27/29 flist decode, `zstd`/`lz4`/old-`zlib` compression (BCL has
+only deflate), `-a` extras on push (uid/gid/links/devices), streaming for &gt;2 GiB files, and the
+`--delete-after`/`--stats` del-stats varint block. See the per-phase notes and `wire-notes.md` open
+questions.
 
 ## The working method (follow this loop every phase)
 
@@ -164,15 +169,24 @@ FileListWriter F_SUM emission / a server-side del-stats read plus their own capt
 
 ## P10 — Compression + secluded-args + push polish
 
-- [ ] **`-z` compression** — capture the compression-string negotiation (stock rsync offers `zstd`
-      first; the BCL only has deflate, so force/scope to `zlib`) and the compressed-token format
-      (`END_FLAG`/`TOKEN_REL`/`DEFLATED_DATA`, cross-file zlib flush state, RLE runs — `transfer-spec.md`
-      §2 marks it out of scope today). A new codec, hence its own phase.
-- [ ] **`--secluded-args` (`-s`)** — implement the pre-handshake NUL-terminated arg list (format
-      observed in P9: server argv drops `. <paths>`, the file args are sent before the version int32);
-      pin the leading argv[0] token + the daemon case, then send it. Fixes remote paths with spaces.
-- [ ] **Push `--checksum` / `--delete`** — FileListWriter F_SUM emission (push-`-c`), and the
-      server-side del-stats read (push-`--delete`, s2c) — each needs its own capture.
+- [x] **`-z` compression** — forced **zlibx** (plain `-z` negotiates zstd — no BCL codec; `--old-compress`
+      zlib needs a window-insert primitive the BCL lacks). New codec `ZlibxTokenCodec` +
+      `FileReceiver`/`MatchSearcher` compressed paths: DEFLATED_DATA framing (`(flag&0x3f)<<8|next`,
+      sync-flush marker stripped/re-appended), TOKEN_REL/TOKENRUN_REL relative-block arithmetic
+      (capture-pinned by `ssh31-pull-z-delta`), matched blocks excluded from the deflate window.
+      Decoder byte-exact against `ssh31-pull-z-{zlibx,delta}`; encoder↔decoder round-trip; both
+      directions live byte-identical (`SshP10InteropTests`). No compression string negotiated
+      (`--new-compress`). See `transfer-spec.md` §2a, `wire-notes.md` Compression negotiation.
+- [x] **`--secluded-args` (`-s`)** — pre-handshake NUL arg list before the version int32:
+      `rsync\0.\0<remote-path>\0\0` (argv[0] `rsync`, dot-arg, remote paths only, empty-string
+      terminator), byte-exact against `ssh31-secluded-spacepath`. `ServerArgvBuilder` drops the
+      `. <paths>` tail and leads the bundle with `s`; `HandshakeRunner.WriteSecludedArgList` emits the
+      list (ssh only — daemon args already go NUL-framed and space-safe). Live-gated (spaced remote path).
+- [x] **Push `--checksum` / `--delete`** — F_SUM emission on every regular-file flist entry
+      (`FileListWriter` + `PushSession.ComputeFlistChecksumsAsync`, capture `ssh31-push-checksum`);
+      `--delete` reports deletions via **MSG_DELETED** (tag 0x6c, no del-stats block on a default push)
+      and adds the empty filter list to c2s (capture `ssh31-push-delete`). Both live-gated. The
+      `--delete-after`/`--stats` del-stats varint block stays uncaptured/deferred (never sent by us).
 
 ## Standing constraints (do not relax)
 

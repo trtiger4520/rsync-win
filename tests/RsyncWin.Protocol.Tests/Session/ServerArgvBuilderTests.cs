@@ -28,6 +28,16 @@ public class ServerArgvBuilderTests
         { "ssh31-push-nsec1", new() { Sender = false, Recurse = true, Paths = ["/t/nsdst/"] } },
         { "ssh31-push-delta", new() { Sender = false, Paths = ["/t/pushdelta/"] } },
         { "ssh31-pull-checksum", new() { Sender = true, Recurse = true, Checksum = true, Paths = ["/t/c1src/"] } },
+        // P10: push --checksum (server gets the same -c bundle letter as a pull) and push --delete
+        // (the server IS the receiver, so its argv carries --delete after the bundle).
+        { "ssh31-push-checksum", new() { Sender = false, Recurse = true, Checksum = true, Paths = ["/t/pcdst/"] } },
+        { "ssh31-push-delete", new() { Sender = false, Recurse = true, Delete = true, Paths = ["/t/pddst/"] } },
+        // P10: --secluded-args (-s) — 's' leads the bundle and the ". <paths>" tail is dropped
+        // (the paths travel as a pre-handshake NUL list instead).
+        { "ssh31-secluded-pull", new() { Sender = true, Recurse = true, SecludedArgs = true, Paths = ["/t/tree/"] } },
+        { "ssh31-secluded-push", new() { Sender = false, Recurse = true, SecludedArgs = true, Paths = ["/t/spushdst/"] } },
+        // P10: -z forces zlibx via --new-compress (no 'z' bundle letter, no compression string).
+        { "ssh31-pull-z-zlibx", new() { Sender = true, Recurse = true, Compress = true, Paths = ["/t/ztree/"] } },
         // ssh31-push-redo is deliberately NOT a golden here: its capture used --bwlimit=200 (a
         // capture-time throttle to stretch the transfer for the redo window, see capture.sh) which
         // is outside the option set ServerArgvBuilder supports — otherwise it is the same "-t"

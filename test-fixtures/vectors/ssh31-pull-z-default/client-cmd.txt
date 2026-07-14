@@ -1,0 +1,2 @@
+client: rsync --protocol=31 -rt -z --no-inc-recursive fake:/t/ztree/ /t/zpull/
+exit=0

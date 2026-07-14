@@ -1,0 +1,7 @@
+rsync
+--server
+--sender
+-trze.LsfxCIvu
+--old-compress
+.
+/t/ztree/

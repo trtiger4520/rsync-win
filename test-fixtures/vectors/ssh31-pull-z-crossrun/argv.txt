@@ -1,0 +1,7 @@
+rsync
+--server
+--sender
+-te.LsfxCIvu
+--new-compress
+.
+/t/src.bin

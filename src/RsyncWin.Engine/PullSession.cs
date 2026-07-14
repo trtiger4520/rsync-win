@@ -820,7 +820,8 @@ public static class PullSession
                             channel.Session.Protocol,
                             StrongChecksum.DigestLength(channel.Session.TransferChecksum),
                             cancellationToken,
-                            basis);
+                            basis,
+                            channel.Session.Compression);
                     }
                 }
                 finally

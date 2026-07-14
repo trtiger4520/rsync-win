@@ -35,13 +35,17 @@ public static class FileListWriter
                 "FileListWriter (P7 T2) only encodes the `-tr` field set — uid/gid/rdev/symlink " +
                 "writing belongs to a later phase");
         }
+        if (options.Checksum && options.ChecksumLength is <= 0 or > 64)
+            throw new ArgumentException(
+                $"flist: --checksum active but ChecksumLength={options.ChecksumLength} was never negotiated",
+                nameof(options));
 
         byte[] previousName = [];
         long previousMtime = 0;
         int previousMode = 0;
 
         foreach (FileEntry entry in entries)
-            WriteEntry(writer, entry, ref previousName, ref previousMtime, ref previousMode);
+            WriteEntry(writer, entry, options, ref previousName, ref previousMtime, ref previousMode);
 
         WriteVarint(writer, 0); // xflags-position 0 terminates the loop (docs/flist-spec.md §4)
         WriteVarint(writer, ioError);
@@ -49,7 +53,8 @@ public static class FileListWriter
     }
 
     private static void WriteEntry(
-        MultiplexWriter writer, FileEntry entry, ref byte[] previousName, ref long previousMtime, ref int previousMode)
+        MultiplexWriter writer, FileEntry entry, FileListOptions options,
+        ref byte[] previousName, ref long previousMtime, ref int previousMode)
     {
         if (entry.Size < 0)
             throw new ArgumentException($"flist: negative size for \"{entry.Name}\"", nameof(entry));
@@ -134,6 +139,20 @@ public static class FileListWriter
             Span<byte> modeBytes = stackalloc byte[4];
             BinaryPrimitives.WriteInt32LittleEndian(modeBytes, entry.Mode);
             writer.Write(modeBytes);
+        }
+
+        // F_SUM — the entry's LAST field under --checksum (docs/flist-spec.md §14): a whole-file
+        // checksum for regular files only (never directories/symlinks), ChecksumLength bytes. The
+        // caller (PushSession) precomputes it into FlistChecksum since the pure core does no file I/O.
+        if (options.Checksum && entry.FileType == FileEntry.RegularFile)
+        {
+            byte[] sum = entry.FlistChecksum
+                ?? throw new ArgumentException(
+                    $"flist: --checksum active but entry \"{entry.Name}\" carries no FlistChecksum", nameof(entry));
+            if (sum.Length != options.ChecksumLength)
+                throw new ArgumentException(
+                    $"flist: entry \"{entry.Name}\" F_SUM is {sum.Length} bytes, expected {options.ChecksumLength}", nameof(entry));
+            writer.Write(sum);
         }
 
         previousName = name;

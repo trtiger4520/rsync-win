@@ -93,6 +93,43 @@ public class HandshakeRunnerTests
     }
 
     [Fact]
+    public async Task SecludedArgs_WritesTheNulArgListBeforeTheVersionInt()
+    {
+        // --secluded-args (-s): the held-back remote path travels as a pre-version NUL list.
+        // Replays the real ssh31-secluded-spacepath server handshake; our c2s prologue must open
+        // with "rsync\0.\0/t/space dir/\0\0" (byte-identical to the captured client) then the
+        // version int and our md5 offer. The space in the path is preserved literally — the point
+        // of -s.
+        var run = await RunAsync(
+            TestFixtures.Bytes("ssh31-secluded-spacepath", "s2c.bin"),
+            new HandshakeOptions { SecludedArgs = ["/t/space dir/"] });
+
+        Assert.Equal(31, run.Context.Protocol);
+
+        List<byte> expected =
+        [
+            .. "rsync\0.\0/t/space dir/\0\0"u8.ToArray(), // pre-version NUL list (23 bytes)
+            0x1f, 0, 0, 0,                                 // version 31 LE
+            0x03, (byte)'m', (byte)'d', (byte)'5',         // our md5-only checksum offer vstring
+        ];
+        Assert.Equal(expected, run.Written);
+    }
+
+    [Fact]
+    public async Task SecludedArgs_IgnoredOnDaemonMode_NoPreVersionList()
+    {
+        // Daemon sessions carry no version int, so there is nowhere to put a pre-version list —
+        // SecludedArgs is ignored and only the checksum vstring is written (same as any daemon run).
+        byte[] server = [0x81, 0xfe, 0x03, (byte)'m', (byte)'d', (byte)'5', 0x44, 0x33, 0x22, 0x11];
+
+        var run = await RunAsync(
+            server,
+            new HandshakeOptions { PreNegotiatedProtocolVersion = 31, SecludedArgs = ["/t/whatever/"] });
+
+        Assert.Equal((byte[])[0x03, (byte)'m', (byte)'d', (byte)'5'], run.Written);
+    }
+
+    [Fact]
     public async Task PeerWithoutNegotiationBit_GetsNoVstring_AndTheMd5Default()
     {
         // A protocol-30 peer that did not set CF_VARINT_FLIST_FLAGS (e.g. rsync 3.0.x): compat

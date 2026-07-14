@@ -1,0 +1,2 @@
+client: rsync --protocol=31 -t -z --compress-choice=zlibx --no-whole-file fake:/t/tree/b003_300k.bin /t/zdelta/
+exit=0

@@ -82,7 +82,8 @@ public static class MatchSearcher
         IReadOnlyList<BlockSignature> blockSums,
         ChecksumAlgorithm algorithm,
         int seed,
-        bool checksumSeedFix)
+        bool checksumSeedFix,
+        CompressionMethod compression = CompressionMethod.None)
     {
         ArgumentNullException.ThrowIfNull(blockSums);
         if (blockSums.Count != header.Count)
@@ -90,10 +91,12 @@ public static class MatchSearcher
                 $"match: sum head declares {header.Count} blocks but {blockSums.Count} entries were given",
                 nameof(blockSums));
 
+        bool zlibx = compression == CompressionMethod.Zlibx;
+
         if (header.Count == 0 || header.BlockLength == 0)
         {
-            EmitLiteralRun(output, source);
-            WriteToken(output, 0);
+            EmitLiteralRun(output, source, zlibx);
+            WriteEnd(output, zlibx);
             return new MatchResult(source.Length, 0);
         }
 
@@ -104,6 +107,7 @@ public static class MatchSearcher
         int sourceLength = source.Length;
         int literalStart = 0;
         int previousMatch = -1;
+        int previousZlibxBlock = 0; // running cursor for the relative TOKEN_REL delta (zlibx only)
         int pos = 0;
         uint weak = 0;
         int weakWindowLen = -1; // window length the current `weak` value was computed over
@@ -128,13 +132,32 @@ public static class MatchSearcher
                 ReadOnlySpan<byte> truncated = strongDigest[..Math.Min(header.StrongSumLength, digestLength)];
 
                 matchedBlock = FindMatch(candidates, previousMatch, header, windowLen, blockSums, truncated);
+
+                // zlibx TOKEN_REL carries an unsigned 6-bit forward delta; a match whose delta from
+                // the last-referenced block does not fit is dropped back to literal bytes rather than
+                // emitting the un-capture-pinned TOKEN_LONG form (docs/transfer-spec.md §2). Rare
+                // (matches are near-sequential); costs a few extra literal bytes, never correctness.
+                if (zlibx && matchedBlock >= 0)
+                {
+                    int delta = matchedBlock - previousZlibxBlock;
+                    if (delta is < 0 or > 0x3F)
+                        matchedBlock = -1;
+                }
             }
 
             if (matchedBlock >= 0)
             {
                 literalBytes += pos - literalStart;
-                EmitLiteralRun(output, source[literalStart..pos]);
-                WriteToken(output, -(matchedBlock + 1));
+                EmitLiteralRun(output, source[literalStart..pos], zlibx);
+                if (zlibx)
+                {
+                    WriteZlibxTokenRel(output, matchedBlock - previousZlibxBlock);
+                    previousZlibxBlock = matchedBlock;
+                }
+                else
+                {
+                    WriteToken(output, -(matchedBlock + 1));
+                }
                 matchedBytes += windowLen;
 
                 pos += windowLen;
@@ -160,8 +183,8 @@ public static class MatchSearcher
         }
 
         literalBytes += sourceLength - literalStart;
-        EmitLiteralRun(output, source[literalStart..sourceLength]);
-        WriteToken(output, 0);
+        EmitLiteralRun(output, source[literalStart..sourceLength], zlibx);
+        WriteEnd(output, zlibx);
         return new MatchResult(literalBytes, matchedBytes);
     }
 
@@ -216,15 +239,60 @@ public static class MatchSearcher
     private static int BlockLength(SumHeader header, int index) =>
         index == header.Count - 1 && header.Remainder != 0 ? header.Remainder : header.BlockLength;
 
-    /// <summary>Writes a pending literal run as consecutive tokens chunked at exactly <see cref="RsyncConstants.ChunkSize"/> (mirrors the stock sender; a longer run becomes several tokens, never one oversized token).</summary>
-    private static void EmitLiteralRun(MultiplexWriter output, ReadOnlySpan<byte> literal)
+    /// <summary>
+    /// Writes a pending literal run. Uncompressed: consecutive plain int32 tokens chunked at exactly
+    /// <see cref="RsyncConstants.ChunkSize"/> (mirrors the stock sender). zlibx: the whole run is
+    /// raw-deflated once (<see cref="ZlibxTokenCodec.DeflateRun"/>) and its payload chunked into
+    /// DEFLATED_DATA tokens (<c>flag = 0x40 | (len&gt;&gt;8)</c>, then <c>len&amp;0xff</c>, then the bytes),
+    /// each ≤ <see cref="ZlibxTokenCodec.MaxDeflatedChunk"/>. An empty run emits nothing either way.
+    /// </summary>
+    private static void EmitLiteralRun(MultiplexWriter output, ReadOnlySpan<byte> literal, bool zlibx)
     {
-        for (int offset = 0; offset < literal.Length; offset += RsyncConstants.ChunkSize)
+        if (!zlibx)
         {
-            int length = Math.Min(RsyncConstants.ChunkSize, literal.Length - offset);
-            WriteToken(output, length);
-            output.Write(literal.Slice(offset, length));
+            for (int offset = 0; offset < literal.Length; offset += RsyncConstants.ChunkSize)
+            {
+                int length = Math.Min(RsyncConstants.ChunkSize, literal.Length - offset);
+                WriteToken(output, length);
+                output.Write(literal.Slice(offset, length));
+            }
+            return;
         }
+
+        if (literal.Length == 0)
+            return;
+
+        byte[] compressed = ZlibxTokenCodec.DeflateRun(literal);
+        for (int offset = 0; offset < compressed.Length; offset += ZlibxTokenCodec.MaxDeflatedChunk)
+        {
+            int length = Math.Min(ZlibxTokenCodec.MaxDeflatedChunk, compressed.Length - offset);
+            Span<byte> header = [(byte)(ZlibxTokenCodec.DeflatedData | (length >> 8)), (byte)(length & 0xFF)];
+            output.Write(header);
+            output.Write(compressed.AsSpan(offset, length));
+        }
+    }
+
+    /// <summary>Ends a file's token stream: uncompressed writes the int32 <c>0</c>; zlibx writes the
+    /// single END_FLAG byte <c>0x00</c>.</summary>
+    private static void WriteEnd(MultiplexWriter output, bool zlibx)
+    {
+        if (zlibx)
+        {
+            Span<byte> end = [ZlibxTokenCodec.EndFlag];
+            output.Write(end);
+        }
+        else
+        {
+            WriteToken(output, 0);
+        }
+    }
+
+    /// <summary>Writes a single-block zlibx TOKEN_REL for a forward <paramref name="delta"/> in [0, 63]
+    /// from the running block cursor (the caller guarantees the range and advances the cursor).</summary>
+    private static void WriteZlibxTokenRel(MultiplexWriter output, int delta)
+    {
+        Span<byte> token = [(byte)(ZlibxTokenCodec.TokenRel | delta)];
+        output.Write(token);
     }
 
     private static void WriteToken(MultiplexWriter output, int value)

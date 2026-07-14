@@ -39,7 +39,50 @@ Each token is a **plain 4-byte LE signed int32** (`write_int`) — **no varint f
 - **t < 0**: block reference `i = -(t+1)`; must satisfy `0 ≤ i < count` (else protocol error, exit 2). Matched length = `blength`, except block `count-1` when `remainder != 0` → `remainder`. Data comes from OUR basis at offset `i * blength`.
 - **t == 0**: end of this file's delta stream; the checksum trailer follows immediately.
 
-The compressed byte-flag format (`END_FLAG`/`TOKEN_REL`/`DEFLATED_DATA`…) exists only under `-z*` — out of scope.
+### 2a. Compressed token stream (`-z`, zlibx) — capture-pinned (P10)
+
+PROVENANCE: canonical-behavior `token.c:send_deflated_token/recv_deflated_token`; byte layout pinned
+against `ssh31-pull-z-zlibx` (full transfer) and `ssh31-pull-z-delta` (matched blocks + literals).
+
+Under `-z` the plain int32 token stream is replaced by a flag-byte grammar. **We force `zlibx`**
+(rsync's "new" compression, `--new-compress`): plain `-z` negotiates **zstd** (no BCL codec) and
+`--old-compress` (zlib) inserts matched-block bytes into the deflate window (needs a primitive the BCL
+lacks). Forcing zlibx sends **no compression vstring** — the choice rides `--new-compress` in the
+server argv, and the handshake bytes are otherwise identical to a non-`-z` session.
+
+Per file: sum head (unchanged) → tokens → **END_FLAG `0x00`** → whole-file trailer (16 B, **not
+compressed**). Token flag byte:
+
+- `flag == 0x00` — END_FLAG.
+- `(flag & 0xC0) == 0x40` — **DEFLATED_DATA**: length `= ((flag & 0x3f) << 8) | next_byte` (14-bit,
+  0..16383, **no +1**), then that many raw-deflate bytes. Consecutive DEFLATED_DATA tokens (no match
+  token between) form ONE literal run — a single raw-deflate stream whose trailing `00 00 ff ff`
+  Z_SYNC_FLUSH marker is **stripped on the wire** (re-append it to inflate).
+- `(flag & 0xC0) == 0x80` — **TOKEN_REL**: one block reference. `startBlock = previousBlock + (flag &
+  0x3f)`, where the running cursor starts at **0** and advances to each token/run's last block.
+- `(flag & 0xC0) == 0xC0` — **TOKENRUN_REL**: as TOKEN_REL plus a 2-byte LE extra count; the run
+  covers `extra + 1` consecutive blocks.
+- `0x20`/`0x21` — TOKEN_LONG/TOKENRUN_LONG: an absolute 4-byte block number for deltas beyond 6 bits
+  (behavior-spec'd, not capture-pinned — our vectors stay within the relative range).
+
+**zlibx excludes matched-block bytes from the deflate window** — the single fact that makes a BCL-only
+implementation possible: the receiver copies matched blocks straight from the basis and feeds only the
+DEFLATED_DATA payloads to `DeflateStream`, never needing an "insert into the window without emitting
+output" primitive (`Z_INSERT_ONLY`, which the BCL lacks). Pinned by `ssh31-pull-z-delta`: flags
+`80 / c2 / c2` (deltas 0 / 2 / 2) decode to block 0, run 2..213, run 215..428.
+
+**The deflate window persists across runs** (only matched blocks are excluded), so a later literal run
+CAN back-reference an earlier one — capture-pinned by `ssh31-pull-z-crossrun` (two runs sharing a
+256-byte marker, matched blocks between, close in deflate-input distance). The receiver must therefore
+inflate the whole run stream CONTINUOUSLY, not run-by-run: `FileReceiver` buffers every run's
+compressed payload and the interleaving op list, then inflates prefix `[0, k)` of the run stream to
+bound each run's slice of the fully-inflated literal buffer (`ZlibxTokenCodec.InflateRuns`). A per-run
+inflate throws `InvalidDataException` on a cross-run reference (an early bug the reviewer caught). The
+encoder (`MatchSearcher`) compresses each run independently (never emitting a cross-run reference of
+its own — a continuous inflater decodes that fine) and drops a match whose block delta exceeds the
+6-bit relative range back to literal rather than emitting the un-pinned TOKEN_LONG.
+
+The uncompressed plain-int32 form (§2 above) still applies without `-z`.
 
 ## 3. Whole-file checksum trailer
 
@@ -129,9 +172,31 @@ but **it does not fire on a client pull.** Measured:
 
 So for our client pull, `--delete` is purely a local prune (`RsyncWin.Fs.LocalTreePruner`), gated on
 `flist io_error == 0`, with **zero** protocol-stream changes. The generator's del counts are computed
-locally and never serialized. (Where del-stats WOULD cross the wire is a **push** `--delete` — the
-remote receiver deletes and must report counts s2c to the client-sender that prints `--stats`; that
-path is uncaptured and out of P9 scope.)
+locally and never serialized. (Where del-stats WOULD cross the wire is a **push** `--delete` — see §5b.)
+
+### 5b. Push `--delete` reports via MSG_DELETED — NO del-stats block (P10, capture-pinned)
+
+PROVENANCE: `ssh31-push-delete` (a `-rt --delete` push; dest holds one extraneous file +
+one extraneous dir with a file inside), both directions byte-verified by the wire-analyst.
+
+On a **push** the remote side is the receiver, so it does the deletion and reports it to us
+(the client-sender). Measured:
+
+- The server argv **does** carry `--delete` (`-tre.LsfxCIvu --delete . <dest>`), unlike a pull (§5a).
+- Each removed entry is reported by a **`MSG_DELETED` mux frame** (tag `MPLEX_BASE(7)+101 = 0x6c`),
+  sent right after the checksum seed and **before** the transfer phase, **deepest-first**. The payload
+  is the deleted path bytes; a directory's payload carries a trailing NUL, a file's does not.
+- There is **NO `NDX_DEL_STATS` block** (no `FF 02` ndx `-3` + 5 varints) anywhere in the stream for a
+  default (delete-during) push. That varint block (§5) is emitted only under
+  `--delete-after`/`--delete-delay`/`--stats` — options we never send — so its wire layout stays
+  INFERRED, not byte-pinned. There is also **no stats block** on a push (P7).
+- `--delete` adds the **empty filter list `00 00 00 00`** to the sender's c2s, before the flist (plain
+  push omits it entirely — resolves the P7 "filters presumably appear under --delete" note).
+
+Implemented by allowing `MessageTag.Deleted` on `PushSession`'s push-client tag set (the
+`MultiplexReader` dispatches it to `MessageReceived` and keeps reading — transparent to the
+choreography) and writing the empty filter list when `serverArgs.Delete`. The deleted paths surface on
+`PushSession.Result.DeletedPaths`; live-gated by `SshP10InteropTests`.
 
 ## 6. Redo mechanics (client = receiver+generator in one process)
 

@@ -1,0 +1,5 @@
+rsync
+--server
+-trce.LsfxCIvu
+.
+/t/pcdst/

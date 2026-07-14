@@ -76,6 +76,11 @@ Decode order:
     `ChecksumLength = StrongChecksum.DigestLength(negotiated)`; the generator compares it against a
     freshly computed whole-file sum of the local basis to decide the transfer (see
     `transfer-spec.md` §4b).
+    **Push side (P10, `ssh31-push-checksum`, VERIFIED)**: a client-**sender** emits the byte-identical
+    F_SUM in the same last-field position for every regular file — `FileListWriter` writes it from
+    `FileEntry.FlistChecksum`, which `PushSession.ComputeFlistChecksumsAsync` precomputes per file (the
+    pure core does no file I/O). Empty file → the constant xxh128("") seed-0
+    `7f 49 8d 46 24 c3 01 60 d8 98 47 01 d3 06 aa 99`.
 
 Annotated capture bytes (ssh31-pull-rt, first + third entries):
 ```
