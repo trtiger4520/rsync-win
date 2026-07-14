@@ -14,6 +14,11 @@ Read these, in order, before changing anything:
    trap list, and open questions. Read it before touching any codec.
 4. Layer specs as needed: `docs/codec-spec.md`, `docs/flist-spec.md`, `docs/transfer-spec.md`.
 
+Reusable workflow recipes live in `.claude/skills/*/SKILL.md` (phase orchestration, Docker
+vector capture, wire-byte decoding) and reviewer/analyst role prompts in `.claude/agents/`.
+They are written for Claude Code's skill/agent machinery, but the content is plain markdown —
+non-Claude agents should read and follow them as ordinary recipes.
+
 ## What this project is
 
 A native Windows rsync **client** in C#/.NET 10 that talks the real rsync wire protocol

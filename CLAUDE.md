@@ -14,6 +14,19 @@ evidence, what to do next, and the mandatory per-phase working method (spec → 
 implement → hermetic tests → live interop → adversarial review → commit). `AGENTS.md` is the
 model-agnostic entry point mirroring the reading order for non-Claude agents.
 
+## Skills & agents (use them — don't re-derive the workflow)
+
+Project-local automation under `.claude/`:
+
+- **`/phase`** — orchestrates a roadmap phase end-to-end (planner → capture experiments →
+  file-overlap-grouped implementers → verifier → adversarial review → phase commit)
+- **`/capture-vectors`** — the only sanctioned way to run a real rsync: throwaway Docker,
+  `MSYS_NO_PATHCONV=1`, deterministic recipes merged into `capture.sh` before commit
+- **`/wire-decode`** — cheatsheet + workflow for decoding captured c2s/s2c bytes
+- **`wire-analyst` agent** — read-only capture/spec analysis; returns conclusions, not hexdumps
+- **`protocol-reviewer` agent** — phase-end adversarial review (protocol / Windows-fs / test
+  strength lenses), findings verified before reported
+
 ## Documentation upkeep (mandatory)
 
 The docs are how a context-limited session avoids re-deriving byte-level facts. Update them **in
