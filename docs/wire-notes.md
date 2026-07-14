@@ -44,10 +44,42 @@ Record the source of every ported table in a comment next to it.
 | Seeded strong-sum variants (MD5/xxh64 block vs whole-file) | **implemented vs spec vectors** | final live pin lands with the P4 delta transfer |
 | Sum head codec + validation | **implemented** | measured 300000 head + spec vectors; null head observed in captures |
 | NDX_DONE phase choreography | spec'd, unverified | pin by capture in P4 (`codec-spec.md` §6/§12) |
+| Handshake runner (client side) | **live-verified** | replays all three captured prologues byte-exact AND negotiates 31/29 against a live rsync 3.4.3 over ssh.exe (P2 interop tests) |
+| Server argv (`server_options()`) | **golden-pinned** | `ServerArgvBuilder` reproduces all 7 captured `argv.txt` files word-for-word |
+| compat_flags letter→bit mapping | **source-verified** | compat.c behavior read (see "client_info" below); consistent with captured 510 |
 
 **P1 hard gate: CLOSED.** Every pure codec (varint/varlong/ndx/vstring/mux header/rolling/MD4/
 seeded strong sums/block sizing/sum head) is implemented and gated by spec vectors and/or captured
 bytes — 146 hermetic tests. What remains before P4 can transfer a file is assembly, not codecs.
+
+**P2 CLOSED.** `HandshakeRunner` + `SessionContext` + `ChecksumNegotiator` + `ServerArgvBuilder`
+(pure core) and `OpenSshProcessTransport` (three concurrent pump paths, `BaseStream` only) are
+implemented. Hermetic tests replay the captured 29/30/31 prologues byte-exact and assert the reader
+stops on the first mux byte; live interop tests negotiate against a real rsync 3.4.3 in an
+sshd container and pin the ssh-255-on-auth-failure path.
+
+## Handshake gating rules (source-verified against compat.c, behavior only)
+
+- The server derives compat_flags from the **capability letters** we send after `-e.` in the server
+  argv (`client_info`): `i`→INC_RECURSE, `f`→SAFE_FLIST, `x`→AVOID_XATTR_OPTIM, `C`→CHKSUM_SEED_FIX,
+  `I`→INPLACE_PARTIAL_DIR, `v`→VARINT_FLIST_FLAGS, `u`→ID0_NAMES. Exception: bits 1–2
+  (SYMLINK_TIMES, SYMLINK_ICONV) reflect the **server build's** capabilities, not our `L`/`s`
+  letters — so never pin the full compat value against a live server, only the bits we depend on.
+- **`CF_VARINT_FLIST_FLAGS` does double duty**: it is also the "peer can negotiate strings" signal
+  (`do_negotiated_strings`). The client must read compat_flags **before** sending its checksum
+  vstring; when the bit is absent nothing is written or read, and the fallback is **md5 at 30/31,
+  md4 at 29**.
+- **The client's list order picks the winner** ("first name in the client's list that the server
+  also lists" — both sides compute it identically). With our single-name offer (`md5`) the rule is
+  unobservable; pin with `--debug=nstr` before offering more than one name (P4, xxh64).
+- A failed negotiation is **exit 4** (`RERR_UNSUPPORTED`), not 2 and not 12.
+- The `-e.<letters>` block is emitted only when the client's **pre-negotiation** protocol is ≥ 30 —
+  that is why a `--protocol=29` run shows plain `-tr` in the captured argv.
+- The compat varint is wire-compatible with the old `write_byte` form for values < 0x80, so a
+  pre-3.2 server's single compat byte decodes fine through the varint reader.
+- **Daemon nuance for P8**: on `rsync://` sockets there are NO binary version ints — the version was
+  already negotiated via the textual `@RSYNCD: <ver>.<sub>` greeting, and `setup_protocol` skips the
+  binary exchange (`remote_protocol` already set). The rest of the prologue is unchanged.
 
 ## Checksum negotiation (measured, rsync 3.4.3)
 
@@ -157,7 +189,8 @@ rsync ≥ 3.2.7) exists beyond the classic 8 flags. Assert `CF_INC_RECURSE` clea
 
 - **Multiplexing is asymmetric.** `io_start_multiplex_in` and `io_start_multiplex_out` are
   independent, per-version decisions. Framing our outbound data when the server does not expect it
-  desyncs immediately. *Open question — pin by live capture in P2, before any transfer code.*
+  desyncs immediately. *Resolved: measured directionality lives in `SessionContext`
+  (in: 29/30/31 framed; out: 30+ framed, 29 raw).*
 - **`write_ndx`/`read_ndx` is its own encoding**: delta-from-previous byte reduction, `0xFE` escape,
   `0x80` high-bit, separate positive/negative running state. `NDX_DONE` is **not** `write_int(-1)`
   on protocol ≥ 30.
@@ -181,9 +214,13 @@ rsync ≥ 3.2.7) exists beyond the classic 8 flags. Assert `CF_INC_RECURSE` clea
 
 ## Open questions (resolve by live capture, in the phase that needs them)
 
-- Exact `write_varint`/`write_varlong` byte math, including `min_bytes` handling — P1
-- Multiplex on/off, per direction and per version — P2, before P4
+- ~~Exact `write_varint`/`write_varlong` byte math~~ — resolved (P1, `codec-spec.md` §2–§3)
+- ~~Multiplex on/off, per direction and per version~~ — resolved (measured; `SessionContext`)
+- ~~Exact `server_options()` bundled short-flag set~~ — resolved (7 argv goldens + compat.c read)
 - Double-`NDX_DONE` at a protocol-31 phase boundary — P4
-- Exact `server_options()` bundled short-flag set, and the `--secluded-args` posture for paths with
-  spaces — P2 (capture a real remote argv with an `--rsync-path` wrapper that logs `"$@"`)
-- Daemon `@RSYNCD` auth digest specifics for a modern `rsyncd` — P8
+- `--secluded-args` posture for remote paths with spaces/metacharacters — P5 (ssh passes the argv
+  through the remote shell, which splits on whitespace)
+- Checksum-negotiation winner rule observed live with a multi-name offer (`--debug=nstr`) — P4,
+  before advertising xxh64
+- Daemon `@RSYNCD` auth digest specifics for a modern `rsyncd` — P8 (note: no binary version ints
+  on daemon sockets, see the gating-rules section)

@@ -38,6 +38,19 @@ public static class VarintCodec
     private static int ExtraBytes(byte header) =>
         Math.Min(BitOperations.LeadingZeroCount(~((uint)header << 24)), 6);
 
+    /// <summary>
+    /// Total varint wire length (1–5) implied by its first byte — for stream readers that must
+    /// consume exactly one varint without over-reading.
+    /// </summary>
+    /// <exception cref="InvalidDataException">Header demands more than 4 extra bytes.</exception>
+    public static int WireLength(byte header)
+    {
+        int extra = ExtraBytes(header);
+        if (extra > 4)
+            throw new InvalidDataException($"varint: header 0x{header:x2} demands {extra} extra bytes (max 4)");
+        return 1 + extra;
+    }
+
     // ---- varint (int32) ----------------------------------------------------------------
 
     /// <summary>Encodes <paramref name="value"/>; returns the number of bytes written (1–5).</summary>
@@ -57,9 +70,7 @@ public static class VarintCodec
             throw new InvalidDataException("varint: empty buffer");
 
         byte header = source[0];
-        int extra = ExtraBytes(header);
-        if (extra > 4)
-            throw new InvalidDataException($"varint: header 0x{header:x2} demands {extra} extra bytes (max 4)");
+        int extra = WireLength(header) - 1;
         if (source.Length < 1 + extra)
             throw new InvalidDataException($"varint: need {1 + extra} bytes, have {source.Length}");
 

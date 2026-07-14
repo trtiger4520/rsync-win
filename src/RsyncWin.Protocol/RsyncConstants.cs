@@ -54,8 +54,8 @@ public static class RsyncConstants
     //
     // NOTE: multiplexing is turned on PER DIRECTION and independently
     // (io_start_multiplex_in vs io_start_multiplex_out). It is NOT active during the
-    // handshake prologue. Exact per-direction/per-version timing is an open question to be
-    // pinned by live capture in P2, before any transfer code is written.
+    // handshake prologue. Measured directionality (see SessionContext): server->client is framed
+    // right after the seed at 29/30/31; client->server is framed only at 30+.
 
     /// <summary>Value added to a <see cref="MessageTag"/> to form the header's high byte.</summary>
     public const int MplexBase = 7;
@@ -113,35 +113,44 @@ public static class RsyncConstants
     public const int ChunkSize = 32 * 1024;
 
     // ---- Compat flags (protocol 30+) ---------------------------------------------------
-    // Exchanged as a varint immediately after version negotiation and BEFORE the checksum seed.
-    // [VERIFY] bit positions against openrsync/gokrazy before the Session codec depends on them.
+    // Written by the SERVER as a varint immediately after version negotiation and BEFORE the
+    // checksum seed; the client only reads. The server derives most bits by echoing the capability
+    // letters we sent after "-e." in the server argv (ServerArgvBuilder.ClientInfo). Bit positions
+    // source-verified against compat.c behavior and consistent with the captured value 510.
 
-    /// <summary>Server negotiated incremental recursion. We force <c>--no-inc-recursive</c> and assert this is clear.</summary>
+    /// <summary>Server negotiated incremental recursion ('i'). We never send the letter and reject the bit.</summary>
     public const int CompatIncRecurse = 1 << 0;
 
-    /// <summary>[VERIFY] Symlink mtimes are transferred.</summary>
+    /// <summary>Server's build can set symlink mtimes. Reflects the SERVER's capability, not our 'L' letter.</summary>
     public const int CompatSymlinkTimes = 1 << 1;
 
-    /// <summary>[VERIFY] Symlink targets are subject to iconv conversion.</summary>
+    /// <summary>Server's build has iconv support. Reflects the SERVER's capability, not our 's' letter.</summary>
     public const int CompatSymlinkIconv = 1 << 2;
 
-    /// <summary>[VERIFY] File list is sent in a "safe" (sanitized) form.</summary>
+    /// <summary>File list is sent in a "safe" (sanitized) form ('f').</summary>
     public const int CompatSafeFlist = 1 << 3;
 
-    /// <summary>[VERIFY] Disable an xattr optimization that is unsafe across versions.</summary>
+    /// <summary>Disable an xattr optimization that is unsafe across versions ('x').</summary>
     public const int CompatAvoidXattrOptim = 1 << 4;
 
     /// <summary>
-    /// Peer applies the corrected checksum-seed ordering. Controls whether the seed is
+    /// Peer applies the corrected checksum-seed ordering ('C'). Controls whether the seed is
     /// prepended or appended when mixing into an MD5 strong checksum.
     /// </summary>
     public const int CompatChecksumSeedFix = 1 << 5;
 
-    /// <summary>[VERIFY] In-place transfers honor a partial directory.</summary>
+    /// <summary>In-place transfers honor a partial directory ('I').</summary>
     public const int CompatInplacePartialDir = 1 << 6;
 
-    /// <summary>File-list entry flags are encoded as a varint rather than a byte/short.</summary>
+    /// <summary>
+    /// File-list entry flags are encoded as a varint ('v'). Does DOUBLE DUTY: the same bit is the
+    /// "peer can negotiate checksum strings" signal — the vstring exchange happens only when the
+    /// server's reply carries it, which is why the client must read compat_flags before offering.
+    /// </summary>
     public const int CompatVarintFlistFlags = 1 << 7;
+
+    /// <summary>uid/gid 0 is sent by name ('u', rsync ≥ 3.2.7). Only meaningful with -o/-g.</summary>
+    public const int CompatId0Names = 1 << 8;
 
     // ---- Exit codes --------------------------------------------------------------------
     // Mirrors rsync's numeric exit statuses. A receiver on Windows will realistically surface
