@@ -165,6 +165,24 @@ sshcap "ssh31-pull-a" --protocol=31 -a --no-inc-recursive fake:/t/tree/ /t/pull/
 # List the size/mtime probe tree (varlong vectors in flist)
 sshcap "ssh31-sizes-list" --protocol=31 -rt --no-inc-recursive --list-only fake:/t/sizes/
 
+# Fast-path pulls (P5): destination already (partially) up to date. Up-to-date
+# files produce ZERO generator bytes — no ndx, no iflags; only changed files are
+# requested. Verified 2026-07: uptodate c2s logical stream = filter-list int 0
+# plus the five NDX_DONE bytes and nothing else.
+rm -rf /t/pull && mkdir -p /t/pull
+cp -a /t/tree/. /t/pull/
+sshcap "ssh31-pull-uptodate" --protocol=31 -rt --no-inc-recursive fake:/t/tree/ /t/pull/
+
+# One file stale in content+mtime (iflags 0x800C), one identical but older
+# mtime (iflags 0x8008). --whole-file keeps the sum heads all-zero, matching
+# what our generator emits before P6 delta support.
+rm -rf /t/pull && mkdir -p /t/pull
+cp -a /t/tree/. /t/pull/
+printf 'stale\n' > /t/pull/b001_small.txt
+touch -d '2019-01-01 00:00:00' /t/pull/b001_small.txt
+touch -d '2019-01-01 00:00:00' /t/pull/b002_64k.bin
+sshcap "ssh31-pull-partial" --protocol=31 -rt --no-inc-recursive --whole-file fake:/t/tree/ /t/pull/
+
 # Delta pull: basis differs from source at known offsets -> real sum header,
 # block sums, matched tokens and literals in the capture.
 rm -rf /t/delta && mkdir -p /t/delta

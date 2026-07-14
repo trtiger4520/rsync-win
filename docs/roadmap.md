@@ -19,14 +19,14 @@
 | P2 | SSH transport + handshake | **DONE** | `8604830` — live proto-31 negotiation, captured 29/30/31 prologues replay byte-exact |
 | P3 | Multiplex + filter send + flist receive (list-only) | **DONE** | `cd61fc4` — list-only against real rsync exits 0 |
 | P4 | Pull transfer (THE interop milestone) | **DONE** | `4683481` — whole tree over ssh.exe SHA-256-identical, remote exit 0; adversarial review findings fixed |
-| P5 | Recursive pull polish (fast path, sanitization, Channels) | **NEXT** | — |
-| P6 | Delta efficiency (basis matching) | pending | — |
+| P5 | Recursive pull polish (fast path, sanitization, Channels) | **DONE** | `P5 complete` commit — fast path pinned byte-exact by `ssh31-pull-uptodate`/`-partial` vectors; live gates 7/7 incl. re-run-transfers-nothing + hostile-name sanitization; CLI wired; 4 adversarial findings fixed |
+| P6 | Delta efficiency (basis matching) | **NEXT** | — |
 | P7 | Push (sender role) | pending | — |
 | P8 | Daemon transport (`rsync://`) | pending | — |
 | P9 | Polish (`--delete`, `-z`, flag surface, exit codes) | pending | — |
 
-Estimated effort remaining (active agent working hours, from P1–P4 measured pace):
-P5 ≈ 4–7 h, P6 ≈ 7–12 h (hardest; critical path for P7), P7 ≈ 4–7 h, P8 ≈ 3–5 h, P9 ≈ 2–4 h.
+Estimated effort remaining (active agent working hours, from P1–P5 measured pace):
+P6 ≈ 7–12 h (hardest; critical path for P7), P7 ≈ 4–7 h, P8 ≈ 3–5 h, P9 ≈ 2–4 h.
 
 ## The working method (follow this loop every phase)
 
@@ -64,23 +64,23 @@ Goal: the pull is a daily-usable tool — safe names, no re-transfer on re-run, 
 capture-tree sizes.
 
 Tasks:
-- [ ] **`WindowsPathMapper` in `RsyncWin.Fs`** — replace P4's hard-reject of `\` / `:` names
+- [x] **`WindowsPathMapper` in `RsyncWin.Fs`** — replace P4's hard-reject of `\` / `:` names
       (see `PullSession.LocalPath`) with sanitization/mapping; handle reserved device names
       (CON, NUL, COM1…), trailing dots/spaces, `\\?\` long paths. Keep the containment check as
       the last line of defense.
-- [ ] **mtime+size fast path** — generator compares the flist entry against the local file and
+- [x] **mtime+size fast path** — generator compares the flist entry against the local file and
       skips up-to-date files (no transfer request). `--checksum` later forces the full compare
       (P9). Gate: **re-run transfers nothing** (assert 0 requested files and stats agree).
-- [ ] **Channels-based generator/receiver concurrency** — P4 writes every phase-0 request before
+- [x] **Channels-based generator/receiver concurrency** — P4 writes every phase-0 request before
       reading any reply; a large flist can fill both pipe buffers and mutually block (documented
       in `wire-notes.md` open questions). Move to concurrent loops over
       `System.Threading.Channels` per the architecture. The `GeneratorBytes` golden test must
       still pass (demuxed logical stream equality is frame-agnostic, so pipelining is safe).
-- [ ] **Randomized temp names** — replace the deterministic `<final>.rsyncwin-tmp` suffix
+- [x] **Randomized temp names** — replace the deterministic `<final>.rsyncwin-tmp` suffix
       (clobber risk against a pre-existing user file; documented in open questions).
-- [ ] **Warn-and-skip unmappable types** (symlinks without privilege, devices) — the flist
+- [x] **Warn-and-skip unmappable types** (symlinks without privilege, devices) — the flist
       decode is still fully consumed; only the fs-apply is skipped.
-- [ ] **Wire the CLI**: `rsyncwin -r user@host:path dest` runs `PullSession`; map failures to
+- [x] **Wire the CLI**: `rsyncwin -r user@host:path dest` runs `PullSession`; map failures to
       rsync numeric exit codes (fs errors → 11, protocol → 12, ssh 255 → 5).
 
 Verify: `diff -r`-equivalent tree equality vs container; re-run transfers nothing; hostile-name

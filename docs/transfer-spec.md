@@ -58,6 +58,15 @@ PROVENANCE: canonical-behavior `match.c:match_sums` else-branch + `sender.c` (`s
 - Request side (us): a new file gets the all-zero null head; an existing zero-length basis produces `(0, 700, 2, 0)` — both have `count=0`, both legal, echoed verbatim.
 - Directories, symlinks, and all attribute-only messages: **confirmed** no sum head, no tokens, no trailer (§1). `ITEM_TRANSFER` on a non-regular file → both ends abort (exit 2, `rsync.c:read_ndx_and_attrs` / receiver check).
 
+### 4a. Phase-0 skip rule (mtime+size fast path, P5)
+
+PROVENANCE: captures `ssh31-pull-uptodate` (dest = exact copy, size+mtime match) and `ssh31-pull-partial` (one file stale content+mtime, one identical bytes but older mtime, rest up to date).
+
+- A regular-file entry whose local size **and** mtime already match the flist entry is **not requested at all**: no ndx, no iflags, no sum head — zero generator bytes for that entry. Confirmed by `ssh31-pull-uptodate`: the entire c2s logical stream there is exactly the empty filter-list `int32 0` plus the five `NDX_DONE` bytes, nothing else, for all seven files **and** both directories.
+- This extends to directories: one that already exists with the entry's exact mtime also gets no itemize echo. A directory that is freshly created is `ITEM_IS_NEW|ITEM_LOCAL_CHANGE`; one that exists but whose mtime differs is `ITEM_REPORT_TIME` only (this is what the transfer root itself gets whenever the destination directory was just created by us — it always "exists" by request time, so it never takes the `IS_NEW` path).
+- A regular file that exists locally but differs is still requested, with the all-zero sum head (no delta support before P6) and iflags built from which field(s) differ: `ITEM_TRANSFER` always, plus `ITEM_REPORT_SIZE` iff the size differs, plus `ITEM_REPORT_TIME` iff the mtime differs. Never `ITEM_IS_NEW` — that stays reserved for files missing locally. Observed in `ssh31-pull-partial`: b001 (size and mtime both differ) → `0x800C`; b002 (same size, older mtime) → `0x8008`.
+- A file missing locally keeps the existing shape from §3/§4: `ITEM_TRANSFER|ITEM_IS_NEW` + all-zero sum head.
+
 ## 5. Phase/DONE choreography with transfers (pins codec-spec §6)
 
 PROVENANCE: canonical-behavior `generator.c:generate_files` (incl. `EARLY_DELAY_DONE_MSG() ≡ !delay_updates`, `EARLY_DELETE_DONE_MSG() ≡ !(delete_during==2 || delete_after)`), `sender.c:send_files` (`max_phase=2`), `main.c` (`do_recv` parent lines: final goodbye; `do_server_sender`: stats; `read_final_goodbye`), `receiver.c:recv_files`; counts MEASURED for list-only in `wire-notes.md` P3 (c2s 5 DONEs @31 / 4 @30; s2c 3 DONEs + stats + @31 goodbye).

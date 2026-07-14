@@ -8,8 +8,9 @@ namespace RsyncWin.Interop.Tests;
 /// <summary>
 /// Hermetic: Windows-side path safety in <see cref="PullSession"/>. <c>FileListReader</c> rejects
 /// the Unix shapes ('/'-rooted, '..' components) at decode time; these pin the Windows-only
-/// escapes — '\' as a separator, drive and ADS colons — plus the mtime clamp that keeps a bogus
-/// wire timestamp from throwing out of the session.
+/// escapes — '\' as a separator, drive and ADS colons — being sanitized by
+/// <see cref="RsyncWin.Fs.WindowsPathMapper"/> rather than rejected, plus the containment backstop
+/// and the mtime clamp that keeps a bogus wire timestamp from throwing out of the session.
 /// </summary>
 public class PullSessionPathSafetyTests
 {
@@ -22,17 +23,26 @@ public class PullSessionPathSafetyTests
     };
 
     [Theory]
-    [InlineData(@"..\..\evil.txt")]      // '\' traversal — invisible to the '/'-splitting validator
-    [InlineData(@"subdir\..\..\evil.txt")]
-    [InlineData(@"\Windows\evil.txt")]   // drive-absolute: Path.Combine discards the destination
-    [InlineData(@"C:\Windows\evil.txt")] // fully rooted
-    [InlineData("C:evil.txt")]           // drive-relative: resolves against that drive's CWD
-    [InlineData("log.txt:hidden")]       // NTFS alternate data stream
-    [InlineData("../evil.txt")]          // defense in depth: '..' the reader should already reject
-    public void WindowsPathSyntax_IsRejected(string name)
+    [InlineData(@"..\..\evil.txt", @"C:\dest\.._.._evil.txt")]           // '\' sanitized, one segment
+    [InlineData(@"subdir\..\..\evil.txt", @"C:\dest\subdir_.._.._evil.txt")]
+    [InlineData(@"\Windows\evil.txt", @"C:\dest\_Windows_evil.txt")]     // drive-absolute backslash
+    [InlineData(@"C:\Windows\evil.txt", @"C:\dest\C__Windows_evil.txt")] // fully rooted
+    [InlineData("C:evil.txt", @"C:\dest\C_evil.txt")]                   // drive-relative colon
+    [InlineData("log.txt:hidden", @"C:\dest\log.txt_hidden")]           // NTFS alternate data stream
+    public void WindowsPathSyntax_IsSanitized(string name, string expected)
     {
+        Assert.Equal(expected, PullSession.LocalPath(@"C:\dest", Regular(name)));
+    }
+
+    [Fact]
+    public void BareParentSegment_StillEscapesAndThrows()
+    {
+        // Defense in depth: a bare ".." component split on '/' should already be rejected by
+        // FileListReader, but the mapper intentionally leaves "." and ".." untouched (they are
+        // navigation tokens, not names to sanitize) so the containment check below is the real
+        // backstop if that rejection is ever bypassed.
         var exception = Assert.Throws<ProtocolException>(
-            () => PullSession.LocalPath(@"C:\dest", Regular(name)));
+            () => PullSession.LocalPath(@"C:\dest", Regular("../evil.txt")));
         Assert.Equal(RsyncExitCode.UnsupportedAction, exception.ExitCode);
     }
 

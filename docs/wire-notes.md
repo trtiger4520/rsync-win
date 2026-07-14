@@ -256,12 +256,22 @@ rsync ≥ 3.2.7) exists beyond the classic 8 flags. Assert `CF_INC_RECURSE` clea
   `transfer-spec.md`)
 - `--secluded-args` posture for remote paths with spaces/metacharacters — P5 (ssh passes the argv
   through the remote shell, which splits on whitespace)
-- Phase-0 writes every request before reading any reply: fine at capture-tree scale, but a very
-  large flist can fill both pipe buffers and mutually block — P5 moves the generator and receiver
-  onto concurrent Channels (the architecture's plan of record)
-- Temp names are the deterministic `<final>.rsyncwin-tmp`: a same-named entry in the tree still
-  lands correctly (sort order receives it after its shorter prefix), but a pre-existing user file
-  with that exact name gets clobbered — P5 randomizes per receive alongside name sanitization
+- ~~Phase-0 writes every request before reading any reply~~ — resolved (P5): the request writer and
+  reply reader now run as two concurrent loops per phase, handed off through a bounded
+  `System.Threading.Channels.Channel<int>` of requested ndx values and joined with `Task.WhenAll`,
+  removing the old fill-both-pipe-buffers deadlock risk on a very large flist. A fault in either
+  loop cancels a linked token so the other side cannot hang forever waiting on the channel.
+- ~~Fast path (mtime+size) for already up-to-date files~~ — resolved (P5, captures
+  `ssh31-pull-uptodate` / `ssh31-pull-partial`): a regular file whose local size and mtime already
+  match the flist entry produces **zero** generator bytes — no ndx, no iflags, no sum head. This
+  extends to directories too: a directory that already exists with the entry's exact mtime also
+  gets no itemize echo (the up-to-date capture's whole c2s stream, dirs included, is just the
+  empty filter-list int32 plus the five `NDX_DONE` bytes). A file that exists but differs gets
+  `ITEM_TRANSFER` plus `ITEM_REPORT_SIZE` iff the size differs and/or `ITEM_REPORT_TIME` iff the
+  mtime differs — never `ITEM_IS_NEW`, which stays reserved for files missing locally. Observed
+  values: b001 (size **and** mtime differ) → `0x800C`; b002 (same size, older mtime) → `0x8008`.
+- ~~Temp names were the deterministic `<final>.rsyncwin-tmp`~~ — resolved (P5): randomized per
+  receive as `.<final>.<8-hex>.rsyncwin-tmp`, alongside `WindowsPathMapper` name sanitization
 - Checksum-negotiation winner rule observed live with a multi-name offer (`--debug=nstr`) — P4,
   before advertising xxh64
 - Daemon `@RSYNCD` auth digest specifics for a modern `rsyncd` — P8 (note: no binary version ints

@@ -7,8 +7,9 @@
   </PropertyGroup>
 
   <!--
-    System.CommandLine is pinned in Directory.Packages.props but not referenced yet.
-    It gets wired in at P3, when the CLI first needs real flag parsing.
+    Flag surface is tiny (-r, -t, -a, -e/rsh, source, dest) - a raw args[] parser in Program.cs
+    is simpler than wiring System.CommandLine for it. System.CommandLine stays pinned in
+    Directory.Packages.props for whichever project needs richer parsing first.
   -->
   <ItemGroup>
     <ProjectReference Include="..\RsyncWin.Engine\RsyncWin.Engine.csproj" />

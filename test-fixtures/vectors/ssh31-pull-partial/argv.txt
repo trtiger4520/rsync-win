@@ -1,0 +1,6 @@
+rsync
+--server
+--sender
+-Wtre.LsfxCIvu
+.
+/t/tree/
