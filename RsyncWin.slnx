@@ -1,0 +1,14 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/RsyncWin.Cli/RsyncWin.Cli.csproj" />
+    <Project Path="src/RsyncWin.Engine/RsyncWin.Engine.csproj" />
+    <Project Path="src/RsyncWin.Fs/RsyncWin.Fs.csproj" />
+    <Project Path="src/RsyncWin.Protocol/RsyncWin.Protocol.csproj" />
+    <Project Path="src/RsyncWin.Transport/RsyncWin.Transport.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/RsyncWin.Fs.Tests/RsyncWin.Fs.Tests.csproj" />
+    <Project Path="tests/RsyncWin.Interop.Tests/RsyncWin.Interop.Tests.csproj" />
+    <Project Path="tests/RsyncWin.Protocol.Tests/RsyncWin.Protocol.Tests.csproj" />
+  </Folder>
+</Solution>

@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!--
+    THE PURE CORE. No Process, no Socket, no filesystem.
+    Everything here consumes and produces byte spans so it can be golden-vector tested offline.
+    Do not add I/O dependencies to this project.
+  -->
+  <ItemGroup>
+    <PackageReference Include="System.IO.Hashing" />
+  </ItemGroup>
+
+</Project>

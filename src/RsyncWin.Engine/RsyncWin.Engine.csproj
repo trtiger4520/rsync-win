@@ -1,0 +1,9 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\RsyncWin.Protocol\RsyncWin.Protocol.csproj" />
+    <ProjectReference Include="..\RsyncWin.Transport\RsyncWin.Transport.csproj" />
+    <ProjectReference Include="..\RsyncWin.Fs\RsyncWin.Fs.csproj" />
+  </ItemGroup>
+
+</Project>

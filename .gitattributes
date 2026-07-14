@@ -1,0 +1,9 @@
+# Normalize text in the repo, check out native on Windows.
+* text=auto
+
+# Captured rsync wire vectors are BINARY. Line-ending normalization would silently corrupt them,
+# and a corrupted golden vector is worse than no vector: it makes a correct codec look broken.
+test-fixtures/** binary
+*.bin  binary
+*.vec  binary
+*.pcap binary

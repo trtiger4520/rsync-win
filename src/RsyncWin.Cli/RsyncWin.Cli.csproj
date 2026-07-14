@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>rsyncwin</AssemblyName>
+    <RootNamespace>RsyncWin.Cli</RootNamespace>
+  </PropertyGroup>
+
+  <!--
+    System.CommandLine is pinned in Directory.Packages.props but not referenced yet.
+    It gets wired in at P3, when the CLI first needs real flag parsing.
+  -->
+  <ItemGroup>
+    <ProjectReference Include="..\RsyncWin.Engine\RsyncWin.Engine.csproj" />
+  </ItemGroup>
+
+</Project>
