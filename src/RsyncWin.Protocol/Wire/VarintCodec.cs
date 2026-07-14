@@ -51,6 +51,20 @@ public static class VarintCodec
         return 1 + extra;
     }
 
+    /// <summary>
+    /// Total varlong wire length (minBytes–9) implied by its first byte — the streaming
+    /// counterpart of <see cref="WireLength"/>.
+    /// </summary>
+    /// <exception cref="InvalidDataException">The header demands a form longer than 9 bytes.</exception>
+    public static int VarlongWireLength(byte header, int minBytes)
+    {
+        int extra = ExtraBytes(header);
+        if (minBytes + extra > MaxVarlongLength)
+            throw new InvalidDataException(
+                $"varlong: header 0x{header:x2} with minBytes={minBytes} demands {minBytes + extra} bytes (max {MaxVarlongLength})");
+        return minBytes + extra;
+    }
+
     // ---- varint (int32) ----------------------------------------------------------------
 
     /// <summary>Encodes <paramref name="value"/>; returns the number of bytes written (1–5).</summary>

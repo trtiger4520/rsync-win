@@ -37,7 +37,11 @@ Record the source of every ported table in a comment next to it.
 | Compat flag (`CF_*`) bit positions | **consistent with capture** | `81 fe` = 510 = all-except-INC_RECURSE fits the documented bits |
 | varint / varlong / ndx / vstring codecs | **spec'd + pinned** | `docs/codec-spec.md`; compat varint, flist mtime bytes, generator request all decode from captures |
 | `ITEM_*` iflags | **spec'd, partially pinned** | 0x0008 and 0xA000 observed in captured requests |
-| `XMIT_*` file-list flags | **not yet recorded** | flist decode phase (P3) |
+| `XMIT_*` file-list flags | **capture-pinned** | `docs/flist-spec.md` §1; sightings 0x19/0x18/0x3a/0xba/0x2019 across four captures |
+| flist entry layout (proto 30/31, varint xflags) | **capture-pinned** | every byte of four captured flists decoded (`flist-spec.md`); 30 and 31 byte-identical for our compat set |
+| flist end: `varint(0)` + `varint(io_error)` + id0-name tail | **capture-pinned** | `00 00` in all captures; `-a` adds `00 04 root` ×2 (CF_ID0_NAMES) |
+| `f_name_cmp` sort (band rule + virtual trailing slash) | **live-pinned** | two discriminating `--list-only` experiments + 23-entry line-for-line match |
+| list-only choreography (proto 31 DONE/stats/goodbye) | **live-verified** | `ListOnlySession` runs a real rsync to **exit 0** (P3 interop gate) |
 | Block sizing (`sum_sizes_sqroot`) | **measured** | 19-point `--debug=deltasum2` sweep; all reproduced |
 | Rolling weak checksum | **measured** | every `--debug=deltasum4` chunk sum reproduced; signed-char pinned |
 | MD4 | **verified** | RFC 1320 suite + openssl legacy provider |
@@ -57,6 +61,14 @@ bytes — 146 hermetic tests. What remains before P4 can transfer a file is asse
 implemented. Hermetic tests replay the captured 29/30/31 prologues byte-exact and assert the reader
 stops on the first mux byte; live interop tests negotiate against a real rsync 3.4.3 in an
 sshd container and pin the ssh-255-on-auth-failure path.
+
+**P3 CLOSED.** `MultiplexReader`/`MultiplexWriter` (frame boundaries carry no semantics — pinned by
+reading the captured stream in 7-byte pulls), `FileListReader` + `FileNameComparer` (spec'd by
+workflow into `docs/flist-spec.md`, validated byte-exact against four captures), and
+`ListOnlySession` (measured proto-31 choreography: filter terminator → flist → DONE, DONE×3 →
+3×DONE + 5×varlong(3) stats + goodbye → final goodbye). Live gate: a full `--list-only` session
+against rsync 3.4.3 ends with the remote side exiting **0**. End-of-run tails, for P4: c2s carries
+5 NDX_DONEs at 31 (4 at 30); s2c: 3 DONEs + stats + (31 only) goodbye DONE.
 
 ## Handshake gating rules (source-verified against compat.c, behavior only)
 

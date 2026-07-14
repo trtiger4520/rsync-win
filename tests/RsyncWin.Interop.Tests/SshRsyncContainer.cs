@@ -63,7 +63,18 @@ public sealed class SshRsyncContainer : IAsyncLifetime
             $"printf '%s\\n' '{publicKey}' > /home/syncer/.ssh/authorized_keys && " +
             "chmod 700 /home/syncer/.ssh && chmod 600 /home/syncer/.ssh/authorized_keys && " +
             "chown -R syncer:syncer /home/syncer/.ssh && " +
-            "mkdir -p /t/tree && echo rsyncwin-interop > /t/tree/a.txt && chown -R syncer:syncer /t && " +
+            // The same shape as the captured golden tree, so hermetic and live tests can share
+            // one expected-entries table: known sizes, a UTF-8 name, a space name, a nested dir.
+            "mkdir -p /t/tree/subdir && cd /t/tree && " +
+            "touch b000_empty && " +
+            "printf 'twelve bytes' > b001_small.txt && " +
+            "head -c 65536 /dev/zero > b002_64k.bin && " +
+            "head -c 300000 /dev/urandom > b003_300k.bin && " +
+            // ash does not expand \x in double quotes; printf does.
+            "printf 'utf8' > \"$(printf 'b004_\\xe4\\xb8\\xad\\xe6\\x96\\x87\\xe6\\xaa\\x94\\xe5\\x90\\x8d.txt')\" && " +
+            "printf 'space' > 'b005 name with space.txt' && " +
+            "printf 'nested!' > subdir/nested.txt && " +
+            "chown -R syncer:syncer /t && " +
             "exec /usr/sbin/sshd -D -e";
 
         var run = await RunAsync("docker",
