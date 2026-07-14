@@ -44,7 +44,8 @@ touching any codec.
 
 ## Licensing / provenance rule
 
-Canonical rsync (`WayneD/rsync`) is **GPLv3** — read it for **behavior only**.
+Canonical rsync ([RsyncProject/rsync](https://github.com/RsyncProject/rsync), formerly `WayneD/rsync`)
+is **GPLv3** — read it for **behavior only**.
 
 - Scalar protocol constants are *facts* and may be recorded.
 - Anything larger than a scalar is *expression*. The `int_byte_extra[64]` varint table and the

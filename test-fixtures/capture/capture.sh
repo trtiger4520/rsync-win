@@ -123,9 +123,21 @@ cat > /cap/fakessh.sh <<'EOF'
 #!/bin/sh
 # Invoked by the rsync client as: fakessh.sh <host> rsync --server ...
 # Records both raw protocol directions and the exact server argv.
+#
+# The naive `tee | "$@" | tee` deadlocks at session end: the first tee waits for
+# EOF on the client pipe while the client waits for this wrapper to exit. A fifo
+# decouples them — when rsync --server exits, the pipeline finishes and the
+# wrapper exits; the orphaned background tee dies on client EOF. Background jobs
+# get stdin rebound to /dev/null (POSIX), so stash the real stdin in fd 3 first.
 shift                                   # drop the host argument
 printf '%s\n' "$@" > "$CAPDIR/argv.txt"
-tee "$CAPDIR/c2s.bin" | "$@" 2>"$CAPDIR/server-stderr.txt" | tee "$CAPDIR/s2c.bin"
+exec 3<&0
+mkfifo "/tmp/fifo.$$"
+tee "$CAPDIR/c2s.bin" <&3 > "/tmp/fifo.$$" &
+"$@" < "/tmp/fifo.$$" 2>"$CAPDIR/server-stderr.txt" | tee "$CAPDIR/s2c.bin"
+rc=$?
+rm -f "/tmp/fifo.$$"
+exit $rc
 EOF
 chmod +x /cap/fakessh.sh
 

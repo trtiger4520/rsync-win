@@ -6,7 +6,8 @@ every entry as unverified until a captured-byte test pins it.
 
 ## Licensing / provenance rule
 
-Canonical rsync (`WayneD/rsync`) is **GPLv3**. We read it for **behavior only**.
+Canonical rsync ([RsyncProject/rsync](https://github.com/RsyncProject/rsync), formerly `WayneD/rsync`)
+is **GPLv3**. We read it for **behavior only**.
 
 - **Scalar protocol constants are facts** (a value a peer will send us) and may be recorded here.
 - **Anything larger than a scalar is expression.** The `int_byte_extra[64]` varint table and the
@@ -30,15 +31,30 @@ Record the source of every ported table in a comment next to it.
 | Item | Status | How to pin |
 |---|---|---|
 | Peer may advertise protocol **32** | **measured** | `rsync 3.4.3` (alpine:3.21) prints `protocol version 32` |
-| Protocol version negotiation (min of both sides) | unverified | capture handshake, `rsync --debug=proto` |
-| Handshake **order** | **corrected, unverified** | see below — capture and diff |
-| `MessageTag` numeric values | unverified | captured trace |
-| Compat flag (`CF_*`) bit positions | unverified | openrsync / captured trace |
-| `XMIT_*` file-list flags | **not yet recorded** | openrsync `flist.c` |
-| `ITEM_*` iflags | **not yet recorded** | openrsync |
-| `int_byte_extra[64]` varint table | **not yet recorded** | must come from openrsync/gokrazy (see rule above) |
-| Block sizing (`sum_sizes_sqroot`) | unverified | `rsync --debug=deltasum2` across file sizes |
-| Rolling + strong checksums | unverified | `rsync --debug=deltasum4` |
+| Protocol version negotiation (min of both sides) | **measured** | captured: we say 31, peer says 32, session runs 31 |
+| Handshake **order** | **measured** | captured bytes, see below |
+| `MessageTag.Data` = 0 (header byte `07`) | **measured** | frame headers throughout every capture |
+| Compat flag (`CF_*`) bit positions | **consistent with capture** | `81 fe` = 510 = all-except-INC_RECURSE fits the documented bits |
+| varint / varlong / ndx / vstring codecs | **spec'd + pinned** | `docs/codec-spec.md`; compat varint, flist mtime bytes, generator request all decode from captures |
+| `ITEM_*` iflags | **spec'd, partially pinned** | 0x0008 and 0xA000 observed in captured requests |
+| `XMIT_*` file-list flags | **not yet recorded** | flist decode phase (P3) |
+| Block sizing (`sum_sizes_sqroot`) | **measured** | 19-point `--debug=deltasum2` sweep; all reproduced |
+| Rolling weak checksum | **measured** | every `--debug=deltasum4` chunk sum reproduced; signed-char pinned |
+| MD4 | **verified** | RFC 1320 suite + openssl legacy provider |
+| Seeded strong-sum variants (MD5/xxh64 block vs whole-file) | spec'd, unverified live | pin against a real delta transfer in P4 |
+| NDX_DONE phase choreography | spec'd, unverified | pin by capture in P4 (`codec-spec.md` §6/§12) |
+
+## Checksum negotiation (measured, rsync 3.4.3)
+
+- Client offer: `xxh128 xxh3 xxh64 md5 md4`; server reply: same + ` none`. **No sha1/sha256** in a
+  stock build's transfer-checksum negotiation (SHA appears only in openssl-enabled builds'
+  `--checksum-choice` and daemon auth). First common entry wins.
+- **Never advertise `md4` at protocol 30/31.** Stock rsync's OpenSSL-EVP path *prepends* the block
+  seed while its builtin path *appends* it — two stock builds can disagree with each other. MD4 is
+  strictly the proto-29 fallback (builtin append path, `CSUM_MD4_OLD` semantics: whole-file sum
+  prepends the seed even when it is 0).
+- Our v1 offer: `md5` (BCL) now, `xxh64` (System.IO.Hashing, LE emission via `HashToUInt64` +
+  `BinaryPrimitives`) once golden-vectored in P4.
 
 ## Interop substrate (this machine)
 

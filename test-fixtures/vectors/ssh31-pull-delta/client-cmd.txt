@@ -1,2 +1,2 @@
 client: rsync --protocol=31 -t --no-whole-file fake:/t/tree/b003_300k.bin /t/delta/
-exit=20
+exit=0

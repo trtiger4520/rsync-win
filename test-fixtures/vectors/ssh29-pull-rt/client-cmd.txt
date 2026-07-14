@@ -1,2 +1,2 @@
 client: rsync --protocol=29 -rt --no-inc-recursive fake:/t/tree/ /t/pull/
-exit=20
+exit=0

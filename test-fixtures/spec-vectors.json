@@ -1,0 +1,402 @@
+[
+  {
+    "codec": "varint",
+    "input": "0",
+    "expectedBytes": "00"
+  },
+  {
+    "codec": "varint",
+    "input": "1",
+    "expectedBytes": "01"
+  },
+  {
+    "codec": "varint",
+    "input": "0x7F",
+    "expectedBytes": "7F"
+  },
+  {
+    "codec": "varint",
+    "input": "0x80",
+    "expectedBytes": "80 80"
+  },
+  {
+    "codec": "varint",
+    "input": "0xFF",
+    "expectedBytes": "80 FF"
+  },
+  {
+    "codec": "varint",
+    "input": "0x100",
+    "expectedBytes": "81 00"
+  },
+  {
+    "codec": "varint",
+    "input": "0x3FFF",
+    "expectedBytes": "BF FF"
+  },
+  {
+    "codec": "varint",
+    "input": "0x4000",
+    "expectedBytes": "C0 00 40"
+  },
+  {
+    "codec": "varint",
+    "input": "0xFFFF",
+    "expectedBytes": "C0 FF FF"
+  },
+  {
+    "codec": "varint",
+    "input": "0x1FFFFF",
+    "expectedBytes": "DF FF FF"
+  },
+  {
+    "codec": "varint",
+    "input": "0x200000",
+    "expectedBytes": "E0 00 00 20"
+  },
+  {
+    "codec": "varint",
+    "input": "0xFFFFFF",
+    "expectedBytes": "E0 FF FF FF"
+  },
+  {
+    "codec": "varint",
+    "input": "0x0FFFFFFF",
+    "expectedBytes": "EF FF FF FF"
+  },
+  {
+    "codec": "varint",
+    "input": "0x10000000",
+    "expectedBytes": "F0 00 00 00 10"
+  },
+  {
+    "codec": "varint",
+    "input": "0x7FFFFFFF",
+    "expectedBytes": "F0 FF FF FF 7F"
+  },
+  {
+    "codec": "varint",
+    "input": "-1",
+    "expectedBytes": "F0 FF FF FF FF"
+  },
+  {
+    "codec": "varint-decode-nonminimal",
+    "input": "bytes 80 05",
+    "expectedBytes": "decodes to value 5 (accept; do not enforce canonicality)"
+  },
+  {
+    "codec": "varint-decode-error",
+    "input": "any header 0xF8..0xFF",
+    "expectedBytes": "protocol error, exit 12"
+  },
+  {
+    "codec": "varlong-m3",
+    "input": "0",
+    "expectedBytes": "00 00 00"
+  },
+  {
+    "codec": "varlong-m3",
+    "input": "1",
+    "expectedBytes": "00 01 00"
+  },
+  {
+    "codec": "varlong-m3",
+    "input": "127",
+    "expectedBytes": "00 7F 00"
+  },
+  {
+    "codec": "varlong-m3",
+    "input": "128",
+    "expectedBytes": "00 80 00"
+  },
+  {
+    "codec": "varlong-m3",
+    "input": "255",
+    "expectedBytes": "00 FF 00"
+  },
+  {
+    "codec": "varlong-m3",
+    "input": "256",
+    "expectedBytes": "00 00 01"
+  },
+  {
+    "codec": "varlong-m3",
+    "input": "1000",
+    "expectedBytes": "00 E8 03"
+  },
+  {
+    "codec": "varlong-m3",
+    "input": "65535",
+    "expectedBytes": "00 FF FF"
+  },
+  {
+    "codec": "varlong-m3",
+    "input": "65536",
+    "expectedBytes": "01 00 00"
+  },
+  {
+    "codec": "varlong-m3",
+    "input": "8388607 (2^23-1)",
+    "expectedBytes": "7F FF FF"
+  },
+  {
+    "codec": "varlong-m3",
+    "input": "8388608 (2^23)",
+    "expectedBytes": "80 00 00 80"
+  },
+  {
+    "codec": "varlong-m3",
+    "input": "2147483648 (2^31)",
+    "expectedBytes": "C0 00 00 00 80"
+  },
+  {
+    "codec": "varlong-m3",
+    "input": "5000000000",
+    "expectedBytes": "C1 00 F2 05 2A"
+  },
+  {
+    "codec": "varlong-m3",
+    "input": "0xDEADBEEF (3735928559)",
+    "expectedBytes": "C0 EF BE AD DE"
+  },
+  {
+    "codec": "varlong-m3",
+    "input": "2^58-1",
+    "expectedBytes": "FB FF FF FF FF FF FF FF"
+  },
+  {
+    "codec": "varlong-m3",
+    "input": "2^58",
+    "expectedBytes": "FC 00 00 00 00 00 00 00 04"
+  },
+  {
+    "codec": "varlong-m4",
+    "input": "0",
+    "expectedBytes": "00 00 00 00"
+  },
+  {
+    "codec": "varlong-m4",
+    "input": "1577934245 (2020-01-02T03:04:05Z)",
+    "expectedBytes": "5E A5 5D 0D"
+  },
+  {
+    "codec": "varlong-m4",
+    "input": "2147483648 (2^31)",
+    "expectedBytes": "80 00 00 00 80"
+  },
+  {
+    "codec": "varlong-m4",
+    "input": "4300000000",
+    "expectedBytes": "81 00 CB 4C 00"
+  },
+  {
+    "codec": "varlong-m4",
+    "input": "-1",
+    "expectedBytes": "F8 FF FF FF FF FF FF FF FF"
+  },
+  {
+    "codec": "varlong-m4",
+    "input": "-2082844800 (1904 mtime)",
+    "expectedBytes": "F8 80 4F DA 83 FF FF FF FF"
+  },
+  {
+    "codec": "varlong-m4",
+    "input": "2^59-1",
+    "expectedBytes": "F7 FF FF FF FF FF FF FF"
+  },
+  {
+    "codec": "varlong-m4",
+    "input": "2^59",
+    "expectedBytes": "F8 00 00 00 00 00 00 00 08"
+  },
+  {
+    "codec": "varlong-m4-decode-error",
+    "input": "header 0xFC..0xFF at min_bytes=4",
+    "expectedBytes": "protocol error, exit 12 (min_bytes+extra>9); same headers LEGAL at min_bytes=3"
+  },
+  {
+    "codec": "varlong-m3-decode-tolerance",
+    "input": "FD + 8 bytes vs FC + same 8 bytes",
+    "expectedBytes": "identical decode (residual beyond int64 discarded)"
+  },
+  {
+    "codec": "ndx",
+    "input": "sequence [0,1,2,5,3,NDX_DONE] fresh encoder",
+    "expectedBytes": "01 01 01 03 FE 80 03 00 00 00"
+  },
+  {
+    "codec": "ndx",
+    "input": "300 fresh",
+    "expectedBytes": "FE 01 2D"
+  },
+  {
+    "codec": "ndx",
+    "input": "7 then 7 fresh",
+    "expectedBytes": "08 FE 00 00"
+  },
+  {
+    "codec": "ndx",
+    "input": "100000 fresh",
+    "expectedBytes": "FE 80 A0 86 01"
+  },
+  {
+    "codec": "ndx",
+    "input": "-2 (NDX_FLIST_EOF) fresh",
+    "expectedBytes": "FF 01"
+  },
+  {
+    "codec": "ndx",
+    "input": "-101 then -2 fresh",
+    "expectedBytes": "FF 64 FF FE 80 02 00 00"
+  },
+  {
+    "codec": "ndx",
+    "input": "NDX_DONE (-1)",
+    "expectedBytes": "00 (state untouched)"
+  },
+  {
+    "codec": "vstring",
+    "input": "\"foo.txt\"",
+    "expectedBytes": "07 66 6F 6F 2E 74 78 74"
+  },
+  {
+    "codec": "vstring",
+    "input": "200-byte name length prefix",
+    "expectedBytes": "80 C8 + 200 raw bytes"
+  },
+  {
+    "codec": "request-message",
+    "input": "ndx 0 fresh, iflags 0xA000 (TRANSFER|IS_NEW), null sum head",
+    "expectedBytes": "01 00 A0 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00"
+  },
+  {
+    "codec": "request-payloads",
+    "input": "iflags 0x9800, fnamecmp_type FUZZY, xname \"a.txt\"",
+    "expectedBytes": "00 98 83 05 61 2E 74 78 74"
+  },
+  {
+    "codec": "weak-checksum",
+    "input": "[01 02 03]",
+    "expectedBytes": "06 00 0A 00"
+  },
+  {
+    "codec": "weak-checksum",
+    "input": "\"abcde\"",
+    "expectedBytes": "EF 01 C3 05"
+  },
+  {
+    "codec": "weak-checksum",
+    "input": "[80 FF 00 7F] (signedness pin)",
+    "expectedBytes": "FE FF 7C FE"
+  },
+  {
+    "codec": "weak-checksum-roll",
+    "input": "window [01 02 03] (s1=6,s2=10,n=3), remove 01 append 04",
+    "expectedBytes": "09 00 10 00"
+  },
+  {
+    "codec": "sum-head",
+    "input": "flength=300000, proto 31, normal phase (MEASURED ground truth)",
+    "expectedBytes": "AD 01 00 00 BC 02 00 00 02 00 00 00 90 01 00 00"
+  },
+  {
+    "codec": "sum-head",
+    "input": "flength=2^30",
+    "expectedBytes": "00 80 00 00 00 80 00 00 03 00 00 00 00 00 00 00"
+  },
+  {
+    "codec": "sum-head",
+    "input": "flength=490001 (round-down-then-floor edge)",
+    "expectedBytes": "BD 02 00 00 BC 02 00 00 02 00 00 00 01 00 00 00"
+  },
+  {
+    "codec": "sum-sizes",
+    "input": "flength=0",
+    "expectedBytes": "count=0 blength=700 s2length=2 remainder=0"
+  },
+  {
+    "codec": "md4",
+    "input": "\"\"",
+    "expectedBytes": "31 d6 cf e0 d1 6a e9 31 b7 3c 59 d7 e0 c0 89 c0"
+  },
+  {
+    "codec": "md4",
+    "input": "\"a\"",
+    "expectedBytes": "bd e5 2c b3 1d e3 3e 46 24 5e 05 fb db d6 fb 24"
+  },
+  {
+    "codec": "md4",
+    "input": "\"abc\"",
+    "expectedBytes": "a4 48 01 7a af 21 d8 52 5f c1 0a e8 7a a6 72 9d"
+  },
+  {
+    "codec": "md4",
+    "input": "\"message digest\"",
+    "expectedBytes": "d9 13 0a 81 64 54 9f e8 18 87 48 06 e1 c7 01 4b"
+  },
+  {
+    "codec": "md4",
+    "input": "\"abcdefghijklmnopqrstuvwxyz\"",
+    "expectedBytes": "d7 9e 1c 30 8a a5 bb cd ee a8 ed 63 df 41 2d a9"
+  },
+  {
+    "codec": "md4",
+    "input": "A-Za-z0-9 (62 chars)",
+    "expectedBytes": "04 3f 85 82 f2 41 db 35 1c e6 27 e1 53 e7 f0 e4"
+  },
+  {
+    "codec": "md4",
+    "input": "\"1234567890\" x 8 (80 chars)",
+    "expectedBytes": "e3 3b 4d dc 9c 38 f2 19 9c 3e 7b 16 4f cc 05 36"
+  },
+  {
+    "codec": "block-sum-md4",
+    "input": "block \"abc\", seed 0x12345678 (appended LE)",
+    "expectedBytes": "df c2 16 29 29 10 28 d5 6e e0 23 a4 87 67 e5 c9"
+  },
+  {
+    "codec": "block-sum-md4",
+    "input": "block = 60 x 'a' + seed = exactly 64 hashed bytes (finalization pin)",
+    "expectedBytes": "26 71 97 95 5a 81 ef c3 10 1b 73 7b 22 b8 ba b5"
+  },
+  {
+    "codec": "file-sum-md4old",
+    "input": "file \"abc\", seed 0x12345678 (prepended LE)",
+    "expectedBytes": "4d 71 32 79 fd e8 d4 36 37 58 4c 88 00 6e 02 f8"
+  },
+  {
+    "codec": "file-sum-md4old",
+    "input": "file \"abc\", seed 0 (still prepends 4 zero bytes)",
+    "expectedBytes": "28 0f 4d a9 68 ef 17 b2 ca 2f b5 d2 89 87 4b e9"
+  },
+  {
+    "codec": "block-sum-md5-seedfix",
+    "input": "block \"abc\", seed 0x12345678, CF_CHKSUM_SEED_FIX set (prepended)",
+    "expectedBytes": "5a 03 5b 41 f3 94 49 76 0a 0c 6a 01 e4 06 0c 62"
+  },
+  {
+    "codec": "block-sum-md5-legacy",
+    "input": "block \"abc\", seed 0x12345678, flag absent (appended)",
+    "expectedBytes": "a7 e3 3b e7 c2 16 4e bd dc b3 da 67 20 a2 d7 d4"
+  },
+  {
+    "codec": "file-sum-md5",
+    "input": "file \"abc\" (always unseeded)",
+    "expectedBytes": "90 01 50 98 3c d2 4f b0 d6 96 3f 7d 28 e1 7f 72"
+  },
+  {
+    "codec": "block-sum-xxh64",
+    "input": "block \"abc\", seed 0x12345678 (numeric seed) -> 0x0F7FD1655F1AF42B LE",
+    "expectedBytes": "2B F4 1A 5F 65 D1 7F 0F"
+  },
+  {
+    "codec": "file-sum-xxh64",
+    "input": "file \"abc\", any session seed (whole-file seed always 0) -> 0x44BC2CF5AD770999 LE",
+    "expectedBytes": "99 09 77 AD F5 2C BC 44"
+  },
+  {
+    "codec": "block-sum-xxh64",
+    "input": "block \"abc\", seed -1 sign-extended to 0xFFFFFFFFFFFFFFFF -> 0x28306E589CC02176 LE",
+    "expectedBytes": "76 21 C0 9C 58 6E 30 28"
+  }
+]
