@@ -47,7 +47,11 @@ Record the source of every ported table in a comment next to it.
 | MD4 | **verified** | RFC 1320 suite + openssl legacy provider |
 | Seeded strong-sum variants (MD5/xxh64 block vs whole-file) | **implemented vs spec vectors** | final live pin lands with the P4 delta transfer |
 | Sum head codec + validation | **implemented** | measured 300000 head + spec vectors; null head observed in captures |
-| NDX_DONE phase choreography | spec'd, unverified | pin by capture in P4 (`codec-spec.md` §6/§12) |
+| NDX_DONE phase choreography | **capture-pinned** | `docs/transfer-spec.md` §5: c2s @31 = #1, #2#3#4 burst, goodbye #5; s2c = echo#1, echo#2+final#3, stats+goodbye#4 (@30: 4/3, no goodbye) |
+| Token stream (plain LE int32; literal/ref/end) | **capture-pinned** | every token of three captures decoded; delta capture pins the remainder rule on the last block |
+| Whole-file trailer (xfer_sum_len, always present) | **capture-pinned** | every trailer recomputed as XXH128 seed-0 (low64 LE ∥ high64 LE); zero-length files included |
+| Sender reply shape (ndx + iflags echo + verbatim sum-head echo) | **capture-pinned** | `transfer-spec.md` §1; generator golden test writes byte-identical requests |
+| Stats block field order (sender-read FIRST) | **measured** | magnitudes unambiguous across three captures; spec's written-first claim corrected |
 | Handshake runner (client side) | **live-verified** | replays all three captured prologues byte-exact AND negotiates 31/29 against a live rsync 3.4.3 over ssh.exe (P2 interop tests) |
 | Server argv (`server_options()`) | **golden-pinned** | `ServerArgvBuilder` reproduces all 7 captured `argv.txt` files word-for-word |
 | compat_flags letter→bit mapping | **source-verified** | compat.c behavior read (see "client_info" below); consistent with captured 510 |
@@ -69,6 +73,25 @@ workflow into `docs/flist-spec.md`, validated byte-exact against four captures),
 3×DONE + 5×varlong(3) stats + goodbye → final goodbye). Live gate: a full `--list-only` session
 against rsync 3.4.3 ends with the remote side exiting **0**. End-of-run tails, for P4: c2s carries
 5 NDX_DONEs at 31 (4 at 30); s2c: 3 DONEs + stats + (31 only) goodbye DONE.
+
+**P4 CLOSED — THE interop milestone.** Transfer phase spec'd and byte-validated into
+`docs/transfer-spec.md` (three captures, both directions, every byte accounted; all trailers
+recomputed as xxh128 seed-0). `PullSession` (generator requests + receiver with temp-file writes,
+whole-file verification, one-retry redo list, measured DONE choreography), `FileReceiver`,
+`Token`, `ItemFlags`, async ndx reads, xxh128 whole-file sums. Hermetic gates: the full captured
+pull replays through `PullSession` (7 files, SHA-256-pinned, trailers genuinely verified) and our
+generator's demuxed request stream is byte-identical to the captured client's. Live gate: pulling
+a whole tree (UTF-8 + space names) over ssh.exe is SHA-256-identical to the container and the
+remote rsync exits **0**. Still uncaptured: `--delete` del-stats, induced-mismatch redo,
+MSG_NO_SEND/MSG_IO_ERROR traffic (transfer-spec §10).
+
+Post-review hardening (adversarial review, three confirmed findings): `LocalPath` rejects
+Windows-only escapes the Unix-centric flist validation cannot see (`\` separators, drive/ADS
+colons, plus a resolved-path containment check) and every name is mapped before the first
+filesystem touch; read-only destination files are replaced (attribute cleared before the move,
+matching rsync's contract) with the temp file cleaned on every path and finalize failures demoted
+to the per-file retry-then-exit-23 lane; wire mtimes clamp to the settable Win32 FileTime range
+(1601-01-01T00:00:01Z … 9999-12-31T23:59:59Z) instead of throwing out of the session.
 
 ## Handshake gating rules (source-verified against compat.c, behavior only)
 
@@ -229,9 +252,16 @@ rsync ≥ 3.2.7) exists beyond the classic 8 flags. Assert `CF_INC_RECURSE` clea
 - ~~Exact `write_varint`/`write_varlong` byte math~~ — resolved (P1, `codec-spec.md` §2–§3)
 - ~~Multiplex on/off, per direction and per version~~ — resolved (measured; `SessionContext`)
 - ~~Exact `server_options()` bundled short-flag set~~ — resolved (7 argv goldens + compat.c read)
-- Double-`NDX_DONE` at a protocol-31 phase boundary — P4
+- ~~Double-`NDX_DONE` at a protocol-31 phase boundary~~ — resolved (P4 capture; full DONE map in
+  `transfer-spec.md`)
 - `--secluded-args` posture for remote paths with spaces/metacharacters — P5 (ssh passes the argv
   through the remote shell, which splits on whitespace)
+- Phase-0 writes every request before reading any reply: fine at capture-tree scale, but a very
+  large flist can fill both pipe buffers and mutually block — P5 moves the generator and receiver
+  onto concurrent Channels (the architecture's plan of record)
+- Temp names are the deterministic `<final>.rsyncwin-tmp`: a same-named entry in the tree still
+  lands correctly (sort order receives it after its shorter prefix), but a pre-existing user file
+  with that exact name gets clobbered — P5 randomizes per receive alongside name sanitization
 - Checksum-negotiation winner rule observed live with a multi-name offer (`--debug=nstr`) — P4,
   before advertising xxh64
 - Daemon `@RSYNCD` auth digest specifics for a modern `rsyncd` — P8 (note: no binary version ints

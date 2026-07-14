@@ -105,13 +105,27 @@ public class StrongChecksumTests
         => Assert.Equal("990977adf52cbc44", FileSum(ChecksumAlgorithm.XxHash64, Seed, 31, Abc));
 
     [Fact]
+    public void XxHash128File_SeedZero_LowHalfThenHighHalf_LittleEndian()
+        // Measured from the captured trailers (nonzero session seeds, still seed 0): the empty
+        // file's XXH128 = 0x99aa06d3014798d8_6001c324468d497f, emitted low64 LE then high64 LE.
+        => Assert.Equal("7f498d4624c30160d8984701d306aa99", FileSum(ChecksumAlgorithm.XxHash128, Seed, 31, []));
+
+    [Fact]
+    public void XxHash128Block_RefusesUntilSeedRulesArePinned()
+    {
+        byte[] digest = new byte[16];
+        Assert.Throws<NotSupportedException>(
+            () => StrongChecksum.ComputeBlockSum(ChecksumAlgorithm.XxHash128, Seed, false, Abc, digest));
+    }
+
+    [Fact]
     public void FileSum_Streams_IdenticallyToOneShot()
     {
         byte[] data = TestFixtures.Bytes("rolling", "blob64k.bin");
         Span<byte> expected = stackalloc byte[16];
         Span<byte> actual = stackalloc byte[16];
 
-        foreach (var algorithm in (ChecksumAlgorithm[])[ChecksumAlgorithm.Md4, ChecksumAlgorithm.Md5, ChecksumAlgorithm.XxHash64])
+        foreach (var algorithm in (ChecksumAlgorithm[])[ChecksumAlgorithm.Md4, ChecksumAlgorithm.Md5, ChecksumAlgorithm.XxHash64, ChecksumAlgorithm.XxHash128])
         {
             var oneShot = StrongChecksum.CreateFileSum(algorithm, Seed, 29);
             oneShot.Append(data);

@@ -6,4 +6,8 @@
     <ProjectReference Include="..\RsyncWin.Fs\RsyncWin.Fs.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="RsyncWin.Interop.Tests" />
+  </ItemGroup>
+
 </Project>

@@ -54,6 +54,9 @@ public static class ChecksumNegotiator
         "md4" => ChecksumAlgorithm.Md4,
         "md5" => ChecksumAlgorithm.Md5,
         "xxh64" => ChecksumAlgorithm.XxHash64,
+        // Whole-file sums only until the block seed rules are pinned (P6) — fine for pulls,
+        // which never compute xxh128 block sums; keep it out of DefaultOffer until then.
+        "xxh128" => ChecksumAlgorithm.XxHash128,
         _ => throw new ArgumentException($"checksum \"{name}\" is not implemented; it must never be offered", nameof(name)),
     };
 }

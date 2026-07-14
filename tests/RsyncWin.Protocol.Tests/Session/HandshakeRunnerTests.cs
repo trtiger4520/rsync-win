@@ -140,7 +140,7 @@ public class HandshakeRunnerTests
     [Fact]
     public async Task OfferingAnUnimplementedChecksum_IsACallerBug()
     {
-        var options = new HandshakeOptions { ChecksumOffer = "xxh128 md5" };
+        var options = new HandshakeOptions { ChecksumOffer = "xxh3 md5" };
 
         await Assert.ThrowsAsync<ArgumentException>(
             () => RunAsync([0x20, 0, 0, 0], options));

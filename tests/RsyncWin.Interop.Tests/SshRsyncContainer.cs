@@ -29,6 +29,10 @@ public sealed class SshRsyncContainer : IAsyncLifetime
     public IReadOnlyList<string> SshArgsWithKey(string keyPath, IEnumerable<string> remoteCommand) =>
         [.. BaseSshArgs(keyPath), $"{User}@{Host}", .. remoteCommand];
 
+    /// <summary>Runs a command inside the container (for gathering ground truth).</summary>
+    public Task<(int ExitCode, string StdOut, string StdErr)> ExecAsync(params string[] command) =>
+        RunAsync("docker", ["exec", _containerId!, .. command], TimeSpan.FromSeconds(60));
+
     private List<string> BaseSshArgs(string keyPath) =>
     [
         "-i", keyPath,
@@ -133,6 +137,9 @@ public sealed class SshRsyncContainer : IAsyncLifetime
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
+            // docker/ssh emit UTF-8; the default console codepage would mangle non-ASCII names.
+            StandardOutputEncoding = System.Text.Encoding.UTF8,
+            StandardErrorEncoding = System.Text.Encoding.UTF8,
         };
         foreach (string argument in arguments)
             startInfo.ArgumentList.Add(argument);

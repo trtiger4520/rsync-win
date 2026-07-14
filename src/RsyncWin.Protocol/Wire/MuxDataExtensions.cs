@@ -26,6 +26,46 @@ public static class MuxDataExtensions
         return VarintCodec.ReadVarint(wire).Value;
     }
 
+    /// <summary>Reads one iflags word — 16-bit little-endian.</summary>
+    public static async ValueTask<ItemFlags> ReadItemFlagsAsync(
+        this MultiplexReader input, CancellationToken cancellationToken = default)
+    {
+        byte[] wire = await input.ReadDataExactlyAsync(2, cancellationToken);
+        return (ItemFlags)(wire[0] | wire[1] << 8);
+    }
+
+    /// <summary>
+    /// Reads one file index through the stateful <paramref name="codec"/>, consuming exactly the
+    /// bytes of whichever wire form arrives (1–6 bytes).
+    /// </summary>
+    public static async ValueTask<int> ReadNdxAsync(
+        this MultiplexReader input, NdxCodec codec, CancellationToken cancellationToken = default)
+    {
+        // Incremental form detection mirrors NdxCodec.Read: [00] | [FF?] then [diff] | [FE x y]
+        // | [FE x|80 y m n]. Bytes are assembled so the codec sees one contiguous span and all
+        // register updates stay in one place.
+        byte[] buffer = new byte[NdxCodec.MaxLength];
+        int length = 0;
+        buffer[length++] = await input.ReadDataByteAsync(cancellationToken);
+        if (buffer[0] == 0x00)
+            return codec.Read(buffer.AsSpan(0, length)).Ndx;
+
+        if (buffer[0] == 0xFF)
+            buffer[length++] = await input.ReadDataByteAsync(cancellationToken);
+
+        if (buffer[length - 1] == 0xFE)
+        {
+            buffer[length++] = await input.ReadDataByteAsync(cancellationToken);
+            buffer[length++] = await input.ReadDataByteAsync(cancellationToken);
+            if ((buffer[length - 2] & 0x80) != 0)
+            {
+                buffer[length++] = await input.ReadDataByteAsync(cancellationToken);
+                buffer[length++] = await input.ReadDataByteAsync(cancellationToken);
+            }
+        }
+        return codec.Read(buffer.AsSpan(0, length)).Ndx;
+    }
+
     public static async ValueTask<long> ReadVarlongAsync(
         this MultiplexReader input, int minBytes, CancellationToken cancellationToken = default)
     {

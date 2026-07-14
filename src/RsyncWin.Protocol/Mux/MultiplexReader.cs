@@ -34,6 +34,9 @@ public sealed class MultiplexReader(PipeReader input, IReadOnlySet<MessageTag>? 
         MessageTag.IoTimeout,
         MessageTag.Noop,
         MessageTag.ErrorExit,
+        // A pull client receives this too: the sender substitutes it for a reply when it cannot
+        // open a requested file (vanished mid-session).
+        MessageTag.NoSend,
     };
 
     private readonly IReadOnlySet<MessageTag> _allowedTags = allowedTags ?? PullClientTags;

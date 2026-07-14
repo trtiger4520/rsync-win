@@ -1,7 +1,5 @@
-using System.IO.Pipelines;
 using RsyncWin.Engine;
 using RsyncWin.Protocol.Session;
-using RsyncWin.Transport;
 
 namespace RsyncWin.Interop.Tests;
 
@@ -10,18 +8,6 @@ namespace RsyncWin.Interop.Tests;
 /// </summary>
 public class ListOnlySessionGuardTests
 {
-    private sealed class ScriptedTransport(byte[] serverBytes) : IRsyncTransport
-    {
-        private readonly Pipe _discard = new(new PipeOptions(pauseWriterThreshold: 0));
-
-        public PipeReader Input { get; } = PipeReader.Create(new MemoryStream(serverBytes));
-        public PipeWriter Output => _discard.Writer;
-        public PipeReader StandardError { get; } = PipeReader.Create(new MemoryStream([]));
-        public ValueTask<int> WaitForExitAsync(CancellationToken cancellationToken = default) =>
-            ValueTask.FromResult(0);
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
-    }
-
     [Fact]
     public async Task Proto31Peer_WithoutVarintFlistFlags_IsRejectedLoudly()
     {

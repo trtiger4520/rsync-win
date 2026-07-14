@@ -36,11 +36,11 @@ public class ChecksumNegotiatorTests
     [InlineData("md4", ChecksumAlgorithm.Md4)]
     [InlineData("md5", ChecksumAlgorithm.Md5)]
     [InlineData("xxh64", ChecksumAlgorithm.XxHash64)]
+    [InlineData("xxh128", ChecksumAlgorithm.XxHash128)] // whole-file sums only until P6
     public void Map_CoversTheImplementedNames(string name, ChecksumAlgorithm expected)
         => Assert.Equal(expected, ChecksumNegotiator.Map(name));
 
     [Theory]
-    [InlineData("xxh128")]
     [InlineData("xxh3")]
     [InlineData("none")]
     public void Map_RejectsEverythingWeMustNeverOffer(string name)

@@ -16,6 +16,14 @@ public enum ChecksumAlgorithm
 
     /// <summary>xxHash64 (negotiated "xxh64").</summary>
     XxHash64,
+
+    /// <summary>
+    /// xxHash128 (negotiated "xxh128") — whole-file sums only for now. The whole-file form is
+    /// capture-pinned (every captured trailer recomputes as XXH128 with seed 0, emitted low64 LE
+    /// then high64 LE); the per-block seed rules are NOT yet golden-vectored, so block sums throw
+    /// until P6 pins them. Do not put this in a production offer before then.
+    /// </summary>
+    XxHash128,
 }
 
 /// <summary>
@@ -42,7 +50,7 @@ public static class StrongChecksum
     public static int DigestLength(ChecksumAlgorithm algorithm) =>
         algorithm switch
         {
-            ChecksumAlgorithm.Md4 or ChecksumAlgorithm.Md5 => 16,
+            ChecksumAlgorithm.Md4 or ChecksumAlgorithm.Md5 or ChecksumAlgorithm.XxHash128 => 16,
             ChecksumAlgorithm.XxHash64 => 8,
             _ => throw new ArgumentOutOfRangeException(nameof(algorithm)),
         };
@@ -92,6 +100,9 @@ public static class StrongChecksum
                 BinaryPrimitives.WriteUInt64LittleEndian(digest, value);
                 return 8;
             }
+            case ChecksumAlgorithm.XxHash128:
+                throw new NotSupportedException(
+                    "xxh128 block-sum seed rules are not golden-vectored yet (P6) — never offer xxh128 for delta transfers");
             default:
                 throw new ArgumentOutOfRangeException(nameof(algorithm));
         }
@@ -109,6 +120,7 @@ public struct WholeFileChecksum
     private Md4 _md4;
     private IncrementalHash? _md5;
     private XxHash64? _xxh;
+    private XxHash128? _xxh128;
     private ChecksumAlgorithm _algorithm;
 
     internal static WholeFileChecksum Create(ChecksumAlgorithm algorithm, int seed, int protocol)
@@ -133,6 +145,9 @@ public struct WholeFileChecksum
             case ChecksumAlgorithm.XxHash64:
                 sum._xxh = new XxHash64(0); // session seed deliberately ignored here
                 break;
+            case ChecksumAlgorithm.XxHash128:
+                sum._xxh128 = new XxHash128(0); // measured: every captured trailer is seed-0
+                break;
             default:
                 throw new ArgumentOutOfRangeException(nameof(algorithm));
         }
@@ -146,6 +161,7 @@ public struct WholeFileChecksum
             case ChecksumAlgorithm.Md4: _md4.Append(data); break;
             case ChecksumAlgorithm.Md5: _md5!.AppendData(data); break;
             case ChecksumAlgorithm.XxHash64: _xxh!.Append(data); break;
+            case ChecksumAlgorithm.XxHash128: _xxh128!.Append(data); break;
         }
     }
 
@@ -164,6 +180,15 @@ public struct WholeFileChecksum
             case ChecksumAlgorithm.XxHash64:
                 BinaryPrimitives.WriteUInt64LittleEndian(digest, _xxh!.GetCurrentHashAsUInt64());
                 return 8;
+            case ChecksumAlgorithm.XxHash128:
+            {
+                // rsync emits the two 64-bit halves as low64 LE then high64 LE — measured against
+                // every captured trailer (empty file = 7f 49 8d 46 24 c3 01 60 d8 98 47 01 d3 06 aa 99).
+                UInt128 value = _xxh128!.GetCurrentHashAsUInt128();
+                BinaryPrimitives.WriteUInt64LittleEndian(digest, (ulong)value);
+                BinaryPrimitives.WriteUInt64LittleEndian(digest[8..], (ulong)(value >> 64));
+                return 16;
+            }
             default:
                 throw new InvalidOperationException("uninitialized");
         }
