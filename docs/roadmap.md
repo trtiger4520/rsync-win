@@ -97,7 +97,7 @@ tree (created inside the container) lands sanitized without escaping the destina
 Post-completion Windows filesystem validation adds the `Category=WindowsFs` test gate for NTFS
 name mapping, long paths, read-only attributes, basis locking, and reparse-point isolation
 Docker SSH validation adds long-path pull and push cases; the 2026-07-14 Windows run passed
-WindowsFs 83/83, hermetic 447/447, and Interop 31/31 with no orphan `rsyncwin-interop` container
+WindowsFs 90/90, hermetic 455/455, and Interop 37/37 with no orphan `rsyncwin-interop` container
 
 ## P6 — Delta efficiency
 

@@ -66,9 +66,9 @@ docker ps -a --filter 'label=rsyncwin-interop=1'
 2026-07-14 在 Windows 主機完成以下檢查：
 
 - Release build：`dotnet build RsyncWin.slnx --no-restore --configuration Release -warnaserror`，0 warnings、0 errors
-- `Category=WindowsFs`：83/83 通過，其中 Fs 56、PullSession/Interop 27
-- `Category!=Interop`：447/447 通過
-- `Category=Interop`：31/31 通過，包含長路徑 pull 與 push，內容 SHA-256 一致
+- `Category=WindowsFs`：90/90 通過，其中 Fs 61、PullSession/Interop 29
+- `Category!=Interop`：455/455 通過
+- `Category=Interop`：37/37 通過，包含長路徑 pull 與 push，內容 SHA-256 一致
 - CLI smoke：未知旗標 exit 1；junction push 輸出 `skipping symlink`，SSH 連線拒絕時 exit 5
 - 本輪產生的 `rsyncwin-interop-*`、`rsyncwin-pushdel-*` 無輸出，沒有新增暫存殘留
 - `docker ps -a --filter label=rsyncwin-interop=1` 無輸出，沒有殘留 interop container
