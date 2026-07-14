@@ -3,14 +3,15 @@ using System.Diagnostics;
 namespace RsyncWin.Interop.Tests;
 
 /// <summary>
-/// A throwaway <c>sshd + rsync</c> container (alpine:3.21, rsync 3.4.3 — the same substrate the
-/// golden vectors were captured from) with ed25519 key-only auth for user <c>syncer</c>.
+/// A throwaway <c>sshd + rsync</c> container using the peer image selected by the interop manifest,
+/// with ed25519 key-only auth for user <c>syncer</c>.
 /// rsync is never installed on the Windows host; Docker is the interop substrate.
 /// </summary>
 public sealed class SshRsyncContainer : IAsyncLifetime
 {
     private string? _containerId;
     private string _workDir = null!;
+    private RsyncPeerSpec Peer => InteropPeerSelection.Current;
 
     public string User => "syncer";
     public string Host => "127.0.0.1";
@@ -58,7 +59,6 @@ public sealed class SshRsyncContainer : IAsyncLifetime
         string publicKey = (await File.ReadAllTextAsync(KeyPath + ".pub")).Trim();
 
         string script =
-            "apk add --no-cache openssh rsync >/dev/null 2>&1 && " +
             "ssh-keygen -A && " +
             "adduser -D syncer && " +
             // BusyBox adduser locks the account ('!'); '*' unlocks it for key-only auth.
@@ -83,11 +83,13 @@ public sealed class SshRsyncContainer : IAsyncLifetime
 
         var run = await RunAsync("docker",
             ["run", "-d", "--rm", "--label", "rsyncwin-interop=1",
-             "-p", "127.0.0.1::22", "alpine:3.21", "sh", "-c", script],
+             "-p", "127.0.0.1::22", Peer.Image, "sh", "-c", script],
             TimeSpan.FromSeconds(120));
         if (run.ExitCode != 0)
             throw new InvalidOperationException($"docker run failed (is Docker running?): {run.StdErr}");
         _containerId = run.StdOut.Trim();
+
+        await AssertPeerVersionAsync();
 
         var port = await RunAsync("docker", ["port", _containerId, "22/tcp"], TimeSpan.FromSeconds(30));
         if (port.ExitCode != 0)
@@ -100,7 +102,7 @@ public sealed class SshRsyncContainer : IAsyncLifetime
 
     private async Task WaitUntilSshReadyAsync()
     {
-        // apk + sshd startup inside the container takes seconds to tens of seconds (network).
+        // Image + sshd startup inside the container takes seconds to tens of seconds (network).
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(150);
         string lastError = "";
         while (DateTime.UtcNow < deadline)
@@ -118,7 +120,10 @@ public sealed class SshRsyncContainer : IAsyncLifetime
     public async Task DisposeAsync()
     {
         if (_containerId is not null)
+        {
+            await CaptureContainerLogAsync();
             await RunAsync("docker", ["rm", "-f", _containerId], TimeSpan.FromSeconds(60));
+        }
         try
         {
             Directory.Delete(_workDir, recursive: true);
@@ -126,6 +131,29 @@ public sealed class SshRsyncContainer : IAsyncLifetime
         catch (IOException)
         {
         }
+    }
+
+    private async Task AssertPeerVersionAsync()
+    {
+        var version = await RunAsync("docker", ["exec", _containerId!, "rsync", "--version"],
+            TimeSpan.FromSeconds(30));
+        if (version.ExitCode != 0)
+            throw new InvalidOperationException($"rsync --version failed: {version.StdErr}");
+        Peer.ValidateVersionOutput(version.StdOut);
+    }
+
+    private async Task CaptureContainerLogAsync()
+    {
+        string? artifacts = Environment.GetEnvironmentVariable("RSYNCWIN_INTEROP_ARTIFACTS");
+        if (string.IsNullOrWhiteSpace(artifacts))
+            return;
+
+        var logs = await RunAsync("docker", ["logs", _containerId!], TimeSpan.FromSeconds(30));
+        Directory.CreateDirectory(artifacts);
+        string path = Path.Combine(
+            artifacts,
+            $"container-ssh-{Peer.Id}-{Guid.NewGuid():N}.log");
+        await File.WriteAllTextAsync(path, logs.StdOut + logs.StdErr);
     }
 
     private static async Task<(int ExitCode, string StdOut, string StdErr)> RunAsync(

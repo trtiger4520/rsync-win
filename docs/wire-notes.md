@@ -30,7 +30,7 @@ Record the source of every ported table in a comment next to it.
 
 | Item | Status | How to pin |
 |---|---|---|
-| Peer may advertise protocol **32** | **measured** | `rsync 3.4.3` (alpine:3.21) prints `protocol version 32` |
+| Peer may advertise protocol **32** | **measured** | `rsync 3.4.3` and `3.4.4` peer images print `protocol version 32` |
 | Protocol version negotiation (min of both sides) | **measured** | captured: we say 31, peer says 32, session runs 31 |
 | Handshake **order** | **measured** | captured bytes, see below |
 | `MessageTag.Data` = 0 (header byte `07`) | **measured** | frame headers throughout every capture |
@@ -58,6 +58,7 @@ Record the source of every ported table in a comment next to it.
 | compat_flags letter→bit mapping | **source-verified** | compat.c behavior read (see "client_info" below); consistent with captured 510 |
 | `--checksum` flist F_SUM (16B xxh128, unseeded, low64-LE∥high64-LE, entry's last field, regular files only) | **capture-pinned (P9)** | `ssh31-pull-checksum`; F_SUM == the whole-file transfer trailer; generator decision iflags 0x0008/0x8002/0xA002 (`transfer-spec.md` §4b) |
 | Pull `--delete` sends NO del-stats on the wire (either direction) | **capture-pinned (P9)** | `ssh31-pull-delete`; server argv has no `--delete`, empty filter list, no `FF 02` c2s or s2c — deletion is a local prune (`transfer-spec.md` §5a) |
+| Push receiver `NDX_DEL_STATS` | **live-verified (3.4.4)** | 3.4.4 emits `FF 02` plus five rsync varints between DONE#3 and DONE#4 for `--delete`; `PushSession` consumes the block before the goodbye exchange |
 
 **P1 hard gate: CLOSED.** Every pure codec (varint/varlong/ndx/vstring/mux header/rolling/MD4/
 seeded strong sums/block sizing/sum head) is implemented and gated by spec vectors and/or captured
@@ -171,12 +172,10 @@ to the per-file retry-then-exit-23 lane; wire mtimes clamp to the settable Win32
 
 ## Interop substrate (this machine)
 
-Docker is the substrate; rsync is never installed on the Windows host. Verified working:
-
-```powershell
-docker run --rm alpine:3.21 sh -c "apk add --no-cache rsync >/dev/null && rsync --version"
-# rsync  version 3.4.3  protocol version 32
-```
+Docker is the substrate; rsync is never installed on the Windows host. The repeatable live gate is
+`scripts/Invoke-LiveInteropMatrix.ps1`, which builds the peers from the pinned base-image digest and
+`peer-matrix.json`, then probes `rsync --version` inside each container before running tests. The
+matrix covers 3.4.3 (`rsync=3.4.3-r0`) and the official 3.4.4 source tarball SHA-256 pin
 
 WSL/Ubuntu is a fallback. There is no `sshd` on the Windows host and nothing listening on port 22, so
 **ssh-to-localhost is not an option** — an `rsync + sshd` container is required. A container running
@@ -376,12 +375,13 @@ Further pins from the P7 decisive captures (`ssh31-push-uptodate` / `-delta` / `
 - **Push `--delete`** (capture-pinned P10, `ssh31-push-delete`): the remote receiver deletes and
   reports each removed entry via a **MSG_DELETED** mux frame (tag 0x6c = MPLEX_BASE 7 + 101), sent
   right after the seed and BEFORE the transfer phase, deepest-first (dirs carry a trailing NUL in the
-  payload). There is **no** `NDX_DEL_STATS` block on a default (delete-during) push — the del-stats
-  varint block (`transfer-spec.md` §5) only appears under `--delete-after`/`--delete-delay`/`--stats`,
-  which we never send. `--delete` also adds the empty filter list `00 00 00 00` to the sender's c2s
-  (plain push omits it — resolves the P7 "filters presumably appear under --delete" note). Handled by
+  payload). A protocol-31 peer may also emit `NDX_DEL_STATS` as `FF 02`, followed by five rsync
+  varints, between DONE#3 and DONE#4; 3.4.4 does this for the default delete-during push. The client
+  consumes this block before the goodbye exchange and still does not send `--delete-after`/
+  `--stats`. `--delete` also adds the empty filter list `00 00 00 00` to the sender's c2s (plain
+  push omits it — resolves the P7 "filters presumably appear under --delete" note). Handled by
   allowing `MessageTag.Deleted` on the push-client tag set and writing the filter list under
-  `serverArgs.Delete`; live-gated by `SshP10InteropTests`.
+  `serverArgs.Delete`; live-gated by `SshP10InteropTests` against 3.4.3 and 3.4.4.
 - ~~Phase-0 writes every request before reading any reply~~ — resolved (P5): the request writer and
   reply reader now run as two concurrent loops per phase, handed off through a bounded
   `System.Threading.Channels.Channel<int>` of requested ndx values and joined with `Task.WhenAll`,

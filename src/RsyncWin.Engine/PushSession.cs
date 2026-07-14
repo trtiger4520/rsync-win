@@ -50,7 +50,8 @@ public static class PushSession
     /// client never receives <see cref="MessageTag.NoSend"/> or <see cref="MessageTag.IoError"/> —
     /// those are things the SENDER emits, and here we are the sender. Under <c>--delete</c> the
     /// remote receiver reports each deletion via <see cref="MessageTag.Deleted"/>
-    /// (<c>ssh31-push-delete</c>: MSG_DELETED frames right after the seed, no del-stats block).</summary>
+    /// (<c>ssh31-push-delete</c>: MSG_DELETED frames right after the seed; newer peers may also
+    /// send an NDX_DEL_STATS block before the final DONE).</summary>
     private static readonly IReadOnlySet<MessageTag> PushClientTags = new HashSet<MessageTag>
     {
         MessageTag.Data,
@@ -146,7 +147,11 @@ public static class PushSession
             WriteNdxDone(writer); // our final#3 — ends the reply side
             await writer.FlushAsync(cancellationToken);
 
-            await SessionSetup.ExpectNdxDoneAsync(reader, cancellationToken); // server's DONE#4
+            // A protocol-31 receiver may put NDX_DEL_STATS between DONE#3 and DONE#4 when
+            // --delete is active. The 3.4.4 peer emits this marker with non-zero counts; the
+            // original 3.4.3 capture did not expose the marker, so a byte-only reader remained
+            // untested until this version-matrix gate.
+            await ReadDoneAndDeleteStatsAsync(reader, inbound, cancellationToken); // server's DONE#4
             WriteNdxDone(writer); // goodbye#4
             await writer.FlushAsync(cancellationToken);
 
@@ -250,6 +255,27 @@ public static class PushSession
     internal static bool ExceedsSupportedSize(long fileLength) => fileLength > int.MaxValue;
 
     private static void WriteNdxDone(MultiplexWriter writer) => writer.Write([0x00]);
+
+    private static async ValueTask ReadDoneAndDeleteStatsAsync(
+        MultiplexReader reader, NdxCodec inbound, CancellationToken cancellationToken)
+    {
+        while (true)
+        {
+            int ndx = await reader.ReadNdxAsync(inbound, cancellationToken);
+            if (ndx == RsyncConstants.NdxDone)
+                return;
+
+            if (ndx != RsyncConstants.NdxDelStats)
+                throw new InvalidDataException(
+                    $"expected NDX_DONE or NDX_DEL_STATS, got {ndx} — session choreography desynced");
+
+            // NDX_DEL_STATS is followed by five rsync varint counters in wire order.  The push
+            // result currently surfaces deletion paths via MSG_DELETED; consume the counters here
+            // so the subsequent DONE markers remain aligned for every peer version.
+            for (int i = 0; i < 5; i++)
+                await reader.ReadVarintAsync(cancellationToken);
+        }
+    }
 
     private static void WriteNdxAndFlags(MultiplexWriter writer, NdxCodec codec, int ndx, ItemFlags iflags)
     {

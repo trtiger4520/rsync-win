@@ -24,17 +24,18 @@
 | P7 | Push (sender role) | **DONE** | `P7 complete` commit — four full-stream c2s replay gates byte-identical (`ssh31-push-rt`/`-uptodate`/`-delta`/`-redo`); MatchSearcher token streams capture-exact incl. redo; live gates 4/4: tree SHA-identical server-side, re-push transfers nothing with real NTFS nsec mtimes, delta literal/matched EXACTLY equal to real rsync `--stats`, vanished source → exit 23 not hang; 3 adversarial findings fixed |
 | P8 | Daemon transport (`rsync://`) | **DONE** | `P8 complete` commit — preamble byte-identical to captured client (greeting/auth/argv) across 10 daemon vectors; auth digest recipe computationally reproduced (md5, proto 31 and 29); post-OK stream `cmp`-identical to ssh minus version ints; 13 hermetic daemon replays + live gates 8/8 (anon+auth pull, module listing, push byte-identical, re-push transfers nothing, @ERROR/readonly exit codes); 4 adversarial findings fixed |
 | P9 | Polish (`--checksum`, `--delete` pull, flag surface, exit codes) | **DONE** | `P9 complete` commit — `--checksum` flist F_SUM capture-pinned (`ssh31-pull-checksum`: 16B xxh128, unseeded, regular-files-only, last field) + generator decision 0x0008/0x8002/0xA002 (hermetic byte-exact c2s replay + decision unit tests + live attribute-only/content-change gates); `--delete` pull is **local-only** (`ssh31-pull-delete`: zero wire del-stats either direction) via `LocalTreePruner` (reparse-point-safe, io_error-suppressed incl. mid-session `MSG_IO_ERROR`); drive-letter/UNC disambiguation, `-c`/`--delete`/long-form/unknown-flag handling, exit-code completeness 0/2/3/4/5/10/11/12/23/24/30 + ssh-255-before-12 ordering fix (`ExitCodeMapper`, one test per code); 394 hermetic + 23 live interop green; adversarial review found no code bugs, 2 test-strength gaps closed |
-| P10 | Compression (`-z`) + `--secluded-args` + push `--checksum`/`--delete` | **DONE** | `P10 complete` commit — `--secluded-args` pre-version NUL arg-list byte-exact (`ssh31-secluded-*`); push `--checksum` F_SUM emission (write→read round-trip + live re-push-nothing) and push `--delete` via MSG_DELETED tag 0x6c (no del-stats, empty filter list added), both live-gated; **`-z` zlibx** codec (forced `--new-compress`, no zstd/zlib) — decoder capture-pinned byte-exact against `ssh31-pull-z-{zlibx,delta}`, encoder↔decoder round-trip, both directions live byte-identical + re-transfers-nothing; 402 hermetic + interop green; adversarial review clean |
+| P10 | Compression (`-z`) + `--secluded-args` + push `--checksum`/`--delete` | **DONE** | `P10 complete` commit — `--secluded-args` pre-version NUL arg-list byte-exact (`ssh31-secluded-*`); push `--checksum` F_SUM emission (write→read round-trip + live re-push-nothing) and push `--delete` via MSG_DELETED tag 0x6c (empty filter list added), both live-gated; PushSession consumes the protocol-31 `NDX_DEL_STATS` block emitted by newer peers; **`-z` zlibx** codec (forced `--new-compress`, no zstd/zlib) — decoder capture-pinned byte-exact against `ssh31-pull-z-{zlibx,delta}`, encoder↔decoder round-trip, both directions live byte-identical + re-transfers-nothing; 402 hermetic + interop green; adversarial review clean |
 | P11 | Application integrity, performance, and Linux image evaluation | **BLOCKED** | Correctness gates pass (426 hermetic, 6 process-level application, existing live interop, Linux image smoke, full deterministic datasets); after two perf repair cycles the fair Linux runner still fails before client start on Windows bind-mount parsing, and Windows smoke still lacks peak RSS and literal/matched evidence |
 
 **Core feature development complete.** P0–P10 are DONE; P11 evaluates the completed surface rather
 than adding rsync wire features. The client does pull and push over ssh.exe and the rsync
 daemon, with delta transfers, `--checksum`, `--delete`, `--secluded-args`, and `-z` (zlibx)
-compression, interoperating byte-for-byte with stock rsync 3.4.3. Scoped-out-by-design items (each
-with a written rationale): protocol 27/29 flist decode, `zstd`/`lz4`/old-`zlib` compression (BCL has
-only deflate), `-a` extras on push (uid/gid/links/devices), streaming for &gt;2 GiB files, and the
-`--delete-after`/`--stats` del-stats varint block. See the per-phase notes and `wire-notes.md` open
-questions.
+compression. The live interop matrix verifies stock rsync 3.4.3 and 3.4.4 peers through Smoke,
+Full, and protocol-29 Guard profiles. Scoped-out-by-design items (each with a written rationale):
+protocol 27/29 flist decode, `zstd`/`lz4`/old-`zlib` compression (BCL has only deflate), `-a` extras
+on push (uid/gid/links/devices), streaming for &gt;2 GiB files, and issuing
+`--delete-after`/`--stats` from this client. See [`interop-matrix.md`](interop-matrix.md), the
+per-phase notes, and `wire-notes.md` open questions.
 
 ## The working method (follow this loop every phase)
 
@@ -191,9 +192,19 @@ FileListWriter F_SUM emission / a server-side del-stats read plus their own capt
       list (ssh only — daemon args already go NUL-framed and space-safe). Live-gated (spaced remote path).
 - [x] **Push `--checksum` / `--delete`** — F_SUM emission on every regular-file flist entry
       (`FileListWriter` + `PushSession.ComputeFlistChecksumsAsync`, capture `ssh31-push-checksum`);
-      `--delete` reports deletions via **MSG_DELETED** (tag 0x6c, no del-stats block on a default push)
-      and adds the empty filter list to c2s (capture `ssh31-push-delete`). Both live-gated. The
-      `--delete-after`/`--stats` del-stats varint block stays uncaptured/deferred (never sent by us).
+      `--delete` reports deletions via **MSG_DELETED** (tag 0x6c) and adds the empty filter list to
+      c2s (capture `ssh31-push-delete`). PushSession also consumes the five-varint `NDX_DEL_STATS`
+      block that protocol-31 peers may emit before the final DONE. Both live-gated. The client still
+      never sends `--delete-after`/`--stats`.
+
+## Live interop matrix
+
+The post-development verification gate is implemented by
+[`scripts/Invoke-LiveInteropMatrix.ps1`](../scripts/Invoke-LiveInteropMatrix.ps1). Peer image and
+source pins live in [`test-fixtures/interop/peer-matrix.json`](../test-fixtures/interop/peer-matrix.json).
+Run `Smoke` during daily development, `Full` after Protocol/Engine/Transport/Fs/CLI changes, and
+both peers with `Full` plus `Guard` before release. See [`interop-matrix.md`](interop-matrix.md) for
+profiles, artifacts, and pass criteria.
 
 ## P11 — Application integrity, performance, and Linux image evaluation
 

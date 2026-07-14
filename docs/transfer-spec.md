@@ -174,10 +174,10 @@ So for our client pull, `--delete` is purely a local prune (`RsyncWin.Fs.LocalTr
 `flist io_error == 0`, with **zero** protocol-stream changes. The generator's del counts are computed
 locally and never serialized. (Where del-stats WOULD cross the wire is a **push** `--delete` — see §5b.)
 
-### 5b. Push `--delete` reports via MSG_DELETED — NO del-stats block (P10, capture-pinned)
+### 5b. Push `--delete` reports via MSG_DELETED (P10, live-verified across peers)
 
 PROVENANCE: `ssh31-push-delete` (a `-rt --delete` push; dest holds one extraneous file +
-one extraneous dir with a file inside), both directions byte-verified by the wire-analyst.
+one extraneous dir with a file inside), extended by the live 3.4.4 interop matrix.
 
 On a **push** the remote side is the receiver, so it does the deletion and reports it to us
 (the client-sender). Measured:
@@ -186,17 +186,19 @@ On a **push** the remote side is the receiver, so it does the deletion and repor
 - Each removed entry is reported by a **`MSG_DELETED` mux frame** (tag `MPLEX_BASE(7)+101 = 0x6c`),
   sent right after the checksum seed and **before** the transfer phase, **deepest-first**. The payload
   is the deleted path bytes; a directory's payload carries a trailing NUL, a file's does not.
-- There is **NO `NDX_DEL_STATS` block** (no `FF 02` ndx `-3` + 5 varints) anywhere in the stream for a
-  default (delete-during) push. That varint block (§5) is emitted only under
-  `--delete-after`/`--delete-delay`/`--stats` — options we never send — so its wire layout stays
-  INFERRED, not byte-pinned. There is also **no stats block** on a push (P7).
+- The 3.4.3 capture has no `NDX_DEL_STATS` block, but 3.4.4 emits `FF 02` (ndx `-3`) plus five
+  rsync varints between the server's DONE#3 and DONE#4 for the same default delete-during push.
+  This is a peer-version behavior difference, not a client option change. The client consumes the
+  optional block before the goodbye exchange. There is also no separate sender stats block on a
+  push (P7).
 - `--delete` adds the **empty filter list `00 00 00 00`** to the sender's c2s, before the flist (plain
   push omits it entirely — resolves the P7 "filters presumably appear under --delete" note).
 
 Implemented by allowing `MessageTag.Deleted` on `PushSession`'s push-client tag set (the
-`MultiplexReader` dispatches it to `MessageReceived` and keeps reading — transparent to the
-choreography) and writing the empty filter list when `serverArgs.Delete`. The deleted paths surface on
-`PushSession.Result.DeletedPaths`; live-gated by `SshP10InteropTests`.
+`MultiplexReader` dispatches it to `MessageReceived` and keeps reading), consuming the optional
+`NDX_DEL_STATS` block, and writing the empty filter list when `serverArgs.Delete`. The deleted paths
+surface on `PushSession.Result.DeletedPaths`; live-gated by `SshP10InteropTests` against 3.4.3 and
+3.4.4.
 
 ## 6. Redo mechanics (client = receiver+generator in one process)
 

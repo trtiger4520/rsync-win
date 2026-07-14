@@ -147,9 +147,10 @@ RsyncWin 強制 `--compress-choice=zlibx`，對應到 server argv 的 `--new-com
 - **拉取 `--delete`**：**完全是本機動作**。server argv **不帶** `--delete`，過濾清單維持空的 int32 0，
   雙向都**沒有** `NDX_DEL_STATS`。刪除是 receiver（本機）的工作。
 - **推送 `--delete`**：server argv **帶** `--delete`，遠端接收端刪除並用 **`MSG_DELETED`**（多工 tag
-  0x6c）**逐項回報**，位在 seed 之後、傳輸階段之前，最深的先報。預設（delete-during）推送**沒有**
-  del-stats varint 區塊（那只在 `--delete-after`/`--delete-delay`/`--stats` 出現，我們從不送）。`--delete`
-  也讓推送用戶端多送一個空過濾清單到 c2s。
+  0x6c）**逐項回報**，位在 seed 之後、傳輸階段之前，最深的先報。3.4.3 的既有擷取沒有
+  del-stats，但 3.4.4 會在 DONE#3 與 DONE#4 之間送出 `FF 02` 加五個 varint；用戶端會消費這個可選區塊
+  `--delete` 也讓推送用戶端多送一個空過濾清單到 c2s。用戶端本身仍不送
+  `--delete-after`/`--stats`
 
 ---
 

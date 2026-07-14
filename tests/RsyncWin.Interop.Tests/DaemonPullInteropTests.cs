@@ -57,6 +57,7 @@ public sealed class DaemonPullInteropTests(RsyncdContainer container) : IClassFi
     }
 
     [Fact]
+    [Trait("Profile", "Smoke")]
     public async Task Pull_AnonymousTree_ByteIdentical_ThenRerunTransfersNothing()
     {
         string dest = Path.Combine(Path.GetTempPath(), $"rsyncwin-daemon-pull-{Guid.NewGuid():N}");
@@ -99,6 +100,7 @@ public sealed class DaemonPullInteropTests(RsyncdContainer container) : IClassFi
     }
 
     [Fact]
+    [Trait("Profile", "Smoke")]
     public async Task Pull_AuthenticatedSecretModule_ByteIdentical()
     {
         string dest = Path.Combine(Path.GetTempPath(), $"rsyncwin-daemon-pull-auth-{Guid.NewGuid():N}");
@@ -160,6 +162,7 @@ public sealed class DaemonPullInteropTests(RsyncdContainer container) : IClassFi
     }
 
     [Fact]
+    [Trait("Profile", "Smoke")]
     public async Task ListModules_ReturnsTreeAndPushAndSecret()
     {
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));

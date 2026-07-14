@@ -25,6 +25,7 @@ public sealed class SshPullInteropTests(SshRsyncContainer container) : IClassFix
     }
 
     [Fact]
+    [Trait("Profile", "Smoke")]
     public async Task Pull_WholeTree_ByteIdentical_AndExitsZero()
     {
         string dest = Path.Combine(Path.GetTempPath(), $"rsyncwin-pull-{Guid.NewGuid():N}");
@@ -78,6 +79,7 @@ public sealed class SshPullInteropTests(SshRsyncContainer container) : IClassFix
     /// up-to-date copy must request nothing — zero transferred files, zero bytes.
     /// </summary>
     [Fact]
+    [Trait("Profile", "Smoke")]
     public async Task Pull_SecondRun_SameDestination_TransfersNothing()
     {
         string dest = Path.Combine(Path.GetTempPath(), $"rsyncwin-pull-rerun-{Guid.NewGuid():N}");

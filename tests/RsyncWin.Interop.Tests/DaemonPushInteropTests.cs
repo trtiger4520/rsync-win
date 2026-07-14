@@ -76,6 +76,7 @@ public sealed class DaemonPushInteropTests(RsyncdContainer container) : IClassFi
     }
 
     [Fact]
+    [Trait("Profile", "Smoke")]
     public async Task Push_Tree_ByteIdenticalOnServer()
     {
         string localRoot = Path.Combine(Path.GetTempPath(), $"rsyncwin-daemon-push-tree-{Guid.NewGuid():N}");
@@ -122,6 +123,7 @@ public sealed class DaemonPushInteropTests(RsyncdContainer container) : IClassFi
     /// <summary>P5-mirrored mtime+size fast path, daemon push direction, live: a second push of the
     /// SAME local tree (real, unrounded NTFS mtimes) must request nothing -- zero files sent.</summary>
     [Fact]
+    [Trait("Profile", "Smoke")]
     public async Task Push_SecondRun_SameTree_TransfersNothing()
     {
         string localRoot = Path.Combine(Path.GetTempPath(), $"rsyncwin-daemon-push-rerun-{Guid.NewGuid():N}");

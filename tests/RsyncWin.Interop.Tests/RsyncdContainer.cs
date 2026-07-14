@@ -5,8 +5,8 @@ using System.Text;
 namespace RsyncWin.Interop.Tests;
 
 /// <summary>
-/// A throwaway rsync-daemon container (alpine:3.21, rsync 3.4.3 -- same substrate as
-/// <see cref="SshRsyncContainer"/> and the golden-vector capture harness) running
+/// A throwaway rsync-daemon container using the peer image selected by the interop manifest,
+/// running
 /// <c>rsync --daemon --no-detach</c> in the foreground with three modules: a read-only
 /// pull tree, a writable push destination, and an authenticated read-only module.
 /// rsync is never installed on the Windows host; Docker is the interop substrate.
@@ -14,6 +14,7 @@ namespace RsyncWin.Interop.Tests;
 public sealed class RsyncdContainer : IAsyncLifetime
 {
     private string? _containerId;
+    private RsyncPeerSpec Peer => InteropPeerSelection.Current;
 
     public const string AuthUser = "alice";
     public const string AuthPassword = "opensesame";
@@ -38,7 +39,6 @@ public sealed class RsyncdContainer : IAsyncLifetime
     public async Task InitializeAsync()
     {
         string script =
-            "apk add --no-cache rsync >/dev/null 2>&1 && " +
             // Same deterministic tree shape as SshRsyncContainer / the golden-vector capture,
             // so hermetic and live daemon tests can share expectations.
             "mkdir -p /t/tree/subdir /t/dpush && cd /t/tree && " +
@@ -67,11 +67,13 @@ public sealed class RsyncdContainer : IAsyncLifetime
 
         var run = await RunAsync("docker",
             ["run", "-d", "--rm", "--label", "rsyncwin-interop=1",
-             "-p", "127.0.0.1::873", "alpine:3.21", "sh", "-c", script],
+             "-p", "127.0.0.1::873", Peer.Image, "sh", "-c", script],
             TimeSpan.FromSeconds(120));
         if (run.ExitCode != 0)
             throw new InvalidOperationException($"docker run failed (is Docker running?): {run.StdErr}");
         _containerId = run.StdOut.Trim();
+
+        await AssertPeerVersionAsync();
 
         var port = await RunAsync("docker", ["port", _containerId, "873/tcp"], TimeSpan.FromSeconds(30));
         if (port.ExitCode != 0)
@@ -83,7 +85,7 @@ public sealed class RsyncdContainer : IAsyncLifetime
     }
 
     /// <summary>Polls until a TCP connect succeeds AND the daemon actually greets with
-    /// "@RSYNCD: " -- a bare open port (e.g. during apk install) is not enough.</summary>
+    /// "@RSYNCD: " -- a bare open port during image startup is not enough.</summary>
     private async Task WaitUntilDaemonReadyAsync()
     {
         var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(150);
@@ -115,7 +117,33 @@ public sealed class RsyncdContainer : IAsyncLifetime
     public async Task DisposeAsync()
     {
         if (_containerId is not null)
+        {
+            await CaptureContainerLogAsync();
             await RunAsync("docker", ["rm", "-f", _containerId], TimeSpan.FromSeconds(60));
+        }
+    }
+
+    private async Task AssertPeerVersionAsync()
+    {
+        var version = await RunAsync("docker", ["exec", _containerId!, "rsync", "--version"],
+            TimeSpan.FromSeconds(30));
+        if (version.ExitCode != 0)
+            throw new InvalidOperationException($"rsync --version failed: {version.StdErr}");
+        Peer.ValidateVersionOutput(version.StdOut);
+    }
+
+    private async Task CaptureContainerLogAsync()
+    {
+        string? artifacts = Environment.GetEnvironmentVariable("RSYNCWIN_INTEROP_ARTIFACTS");
+        if (string.IsNullOrWhiteSpace(artifacts))
+            return;
+
+        var logs = await RunAsync("docker", ["logs", _containerId!], TimeSpan.FromSeconds(30));
+        Directory.CreateDirectory(artifacts);
+        string path = Path.Combine(
+            artifacts,
+            $"container-daemon-{Peer.Id}-{Guid.NewGuid():N}.log");
+        await File.WriteAllTextAsync(path, logs.StdOut + logs.StdErr);
     }
 
     private static async Task<(int ExitCode, string StdOut, string StdErr)> RunAsync(

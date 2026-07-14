@@ -83,6 +83,7 @@ public sealed class SshPushInteropTests(SshRsyncContainer container) : IClassFix
     }
 
     [Fact]
+    [Trait("Profile", "Smoke")]
     public async Task Push_Tree_ByteIdenticalOnServer()
     {
         string localRoot = Path.Combine(Path.GetTempPath(), $"rsyncwin-push-tree-{Guid.NewGuid():N}");
@@ -191,6 +192,7 @@ public sealed class SshPushInteropTests(SshRsyncContainer container) : IClassFix
     /// bug in the XMIT_MOD_NSEC path, not a test to weaken.
     /// </summary>
     [Fact]
+    [Trait("Profile", "Smoke")]
     public async Task Push_SecondRun_SameDestination_TransfersNothing()
     {
         string localRoot = Path.Combine(Path.GetTempPath(), $"rsyncwin-push-rerun-{Guid.NewGuid():N}");

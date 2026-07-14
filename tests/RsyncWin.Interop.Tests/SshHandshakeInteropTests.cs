@@ -16,6 +16,7 @@ public sealed class SshHandshakeInteropTests(SshRsyncContainer container) : ICla
     private static readonly TimeSpan HandshakeTimeout = TimeSpan.FromSeconds(60);
 
     [Fact]
+    [Trait("Profile", "Smoke")]
     public async Task Protocol31_HandshakeAgainstRealRsync()
     {
         var argv = new ServerArgvBuilder { Sender = true, Recurse = true, Paths = ["/t/tree/"] };
@@ -48,6 +49,7 @@ public sealed class SshHandshakeInteropTests(SshRsyncContainer container) : ICla
     }
 
     [Fact]
+    [Trait("Profile", "Guard")]
     public async Task Protocol29_FallbackHandshake()
     {
         var argv = new ServerArgvBuilder { Sender = true, Recurse = true, Protocol = 29, Paths = ["/t/tree/"] };

@@ -46,6 +46,10 @@ dotnet test                                   # everything
 dotnet test --filter "Category!=Interop"      # fast, hermetic (no rsync binary needed)
 dotnet test --filter "Category=Interop"       # live interop against a real rsync
 
+pwsh -File scripts/Invoke-LiveInteropMatrix.ps1 -Profile Smoke  # daily live matrix
+pwsh -File scripts/Invoke-LiveInteropMatrix.ps1 -Profile Full   # full matrix for release gates
+pwsh -File scripts/Invoke-LiveInteropMatrix.ps1 -Profile Guard  # protocol-29 handshake guard
+
 dotnet test --filter "FullyQualifiedName~TestClassName.MethodName"
 
 dotnet run --project src/RsyncWin.Cli
@@ -139,8 +143,10 @@ Two tiers. Correctness is gated by the first, which needs no network:
 1. **Hermetic golden vectors** (`RsyncWin.Protocol.Tests`) — bytes captured from a real rsync
    (`--debug=deltasum2`, `--debug=deltasum4`, `--debug=proto`) checked into `test-fixtures/` and
    replayed against the pure core.
-2. **Live interop** (`RsyncWin.Interop.Tests`, `[Trait("Category","Interop")]`) — against a real rsync
-   over ssh-to-localhost, or pinned Testcontainers images.
+2. **Live interop** (`RsyncWin.Interop.Tests`, `[Trait("Category","Interop")]`) — against fixed
+   rsync 3.4.3/3.4.4 peer images through `scripts/Invoke-LiveInteropMatrix.ps1`. The runner builds
+   peers from `test-fixtures/interop/peer-matrix.json`, runs peers sequentially, records TRX and
+   stdout/stderr, and keeps fixture logs on failure. rsync is never installed on the Windows host.
 
 Phase gates are byte/hash equality or "re-run transfers nothing" — never "looks right". Every interop
 test needs a **hang-detection timeout**; phase-boundary bugs manifest as hangs, not failures.

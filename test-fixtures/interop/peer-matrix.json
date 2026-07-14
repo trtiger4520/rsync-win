@@ -1,0 +1,21 @@
+{
+  "baseImage": "alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d",
+  "dockerfile": "test-fixtures/interop/Dockerfile",
+  "peers": [
+    {
+      "id": "rsync-3.4.3",
+      "version": "3.4.3",
+      "image": "rsyncwin/interop-peer:3.4.3",
+      "packageVersion": "rsync=3.4.3-r0",
+      "sourceUrl": "https://download.samba.org/pub/rsync/src/rsync-3.4.3.tar.gz",
+      "sourceSha256": "c72e63ca3021cbc80ba86ec30102773f4c5631fbc492b52e773b3958f82a53d3"
+    },
+    {
+      "id": "rsync-3.4.4",
+      "version": "3.4.4",
+      "image": "rsyncwin/interop-peer:3.4.4",
+      "sourceUrl": "https://download.samba.org/pub/rsync/src/rsync-3.4.4.tar.gz",
+      "sourceSha256": "bd88cf82fa653da32314fb229136407c5c90f80d1758d8f4b091767877d8fa96"
+    }
+  ]
+}
