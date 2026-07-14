@@ -42,19 +42,56 @@ Record the source of every ported table in a comment next to it.
 
 ## Interop substrate (this machine)
 
-Docker is the substrate. Verified working:
+Docker is the substrate; rsync is never installed on the Windows host. Verified working:
 
 ```powershell
 docker run --rm alpine:3.21 sh -c "apk add --no-cache rsync >/dev/null && rsync --version"
 # rsync  version 3.4.3  protocol version 32
 ```
 
-WSL/Ubuntu is available as a fallback. There is no `sshd` on the Windows host and nothing listening on
-port 22, so **ssh-to-localhost is not currently an option** — P2 needs an `rsync + sshd` container with
-port 22 published. Pin the image so protocol behavior does not drift under us.
+WSL/Ubuntu is a fallback. There is no `sshd` on the Windows host and nothing listening on port 22, so
+**ssh-to-localhost is not an option** — an `rsync + sshd` container is required. A container running
+`sshd` + `rsync` with ed25519 key auth was stood up and driven successfully (see below).
 
-Note the version triple: we implement **31**, the peer claims **32**, and the session negotiates
-`min(...) = 31`. A newer peer is the normal case, not an error.
+Note the version triple: a peer is routinely *newer* than us. We advertise N, rsync 3.4.3 advertises
+32, and the session negotiates `min(...) = N`. That is the normal case, not an error.
+
+## MEASURED: rsync 3.4.3 accepts old-protocol clients
+
+Driven against a real rsync 3.4.3 in a container. Every cell byte-verified with `cmp`:
+
+| transport | proto 27 | 29 | 30 | 31 |
+|---|---|---|---|---|
+| daemon pull (`rsync://`) | OK | OK | OK | OK |
+| ssh pull | OK | OK | OK | OK |
+| ssh push | OK | — | — | OK |
+
+This matters enormously for scope. **Protocol 27 predates varint, `write_ndx` delta encoding,
+`compat_flags`, and `negotiate_the_strings`** — all of which are protocol 30+. It is also exactly the
+version that openrsync (ISC) and gokrazy/rsync (BSD-3) implement, so at 27 there *are* permissively
+licensed reference implementations to port from; at 30/31 there are none, and rsync itself is GPLv3.
+
+## Capturing golden vectors
+
+`--debug=DELTASUM` (levels 1-4) prints the block-sizing decision and per-chunk weak checksums:
+
+```sh
+rsync --protocol=27 -a --no-whole-file --debug=deltasum4 src/blob.bin basis/blob.bin
+# count=429 rem=400 blength=700 s2length=2 flength=300000
+# chunk[0] offset=0 len=700 sum1=3c71f701
+# chunk[1] offset=700 len=700 sum1=d80b0ca2
+```
+
+Measured for `flength=300000`: `blength=700`, `count=429`, `rem=400`, `s2length=2`.
+Cross-check: `ceil(300000/700) = 429`, and `428*700 + 400 = 300000`. `sqrt(300000) ≈ 548 < 700`, so
+blength floors at `BLOCK_SIZE`.
+
+**Identical at protocol 27 and 31** — block sizing does not vary across the versions we care about, so
+this work carries over regardless of the version we target.
+
+Do not reconstruct `s2length` from memory. A hand-derivation of the `sum_sizes_sqroot` bit math gave
+1 where the real rsync prints 2. Take the formula from openrsync and validate it against captured
+vectors across a spread of file sizes.
 
 ## Handshake order (corrected)
 
