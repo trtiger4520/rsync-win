@@ -193,6 +193,26 @@ touch -d '2019-01-01 00:00:00' /t/delta/b003_300k.bin
 sshcap "ssh31-pull-delta" --protocol=31 -t --no-whole-file fake:/t/tree/b003_300k.bin /t/delta/
 cp /t/delta/b003_300k.bin "$OUT/ssh31-pull-delta/result.bin" 2>/dev/null || true
 
+# Redo capture (P6): corrupt the basis mid-transfer so the receiver's
+# reconstruction mismatches the sender's whole-file sum -> server redo phase.
+# 4 MiB source; basis differs in the first 256 KiB (early literals) with an
+# older mtime; --bwlimit=200 stretches the transfer to ~20 s and 1 s in a tail
+# block of the basis is corrupted. The generator computed its sums at t~0 from
+# the clean basis, the receiver copies the matched tail from the corrupted one.
+# Verified: exit 0, result byte-identical to source, c2s carries BOTH the
+# phase-0 sums and the full-length phase-1 redo sums.
+mkdir -p /t/redo /t/redodst
+detbytes 4194304 redo4m > /t/redo/big.bin
+touch -d '2023-05-05 05:05:05' /t/redo/big.bin
+cp /t/redo/big.bin /t/redodst/big.bin
+detbytes 262144 redobasis | dd of=/t/redodst/big.bin bs=1024 count=256 conv=notrunc 2>/dev/null
+touch -d '2019-01-01 00:00:00' /t/redodst/big.bin
+( sleep 1; printf 'ZZZZ' | dd of=/t/redodst/big.bin bs=1 seek=4100000 conv=notrunc 2>/dev/null ) &
+CORRUPTER=$!
+sshcap "ssh31-pull-redo" --protocol=31 -t --no-whole-file --bwlimit=200 fake:/t/redo/big.bin /t/redodst/
+wait $CORRUPTER 2>/dev/null || true
+cp /t/redodst/big.bin "$OUT/ssh31-pull-redo/result.bin"
+
 # Push (sender-side capture; P7 reference, free to record now)
 rm -rf /t/pushdst && mkdir -p /t/pushdst
 sshcap "ssh31-push-rt" --protocol=31 -rt --no-inc-recursive /t/tree/ fake:/t/pushdst/

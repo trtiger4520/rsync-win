@@ -45,6 +45,7 @@ public static class PullSession
         IReadOnlyList<FileEntry> Entries,
         int TransferredFiles,
         long TransferredBytes,
+        long MatchedBytes,
         IReadOnlyList<string> RedoneFiles,
         IReadOnlyList<string> FailedFiles,
         IReadOnlyList<(string Name, string Reason)> SkippedNonRegular,
@@ -119,13 +120,15 @@ public static class PullSession
         // requests go out, instead of only after all of them have been written.
         List<int> redo = await RunPhaseAsync(
             (requestedNdx, ct) => WritePhase0RequestsAsync(
-                channel.Writer, outbound, entries, destinationDirectory, skipped, excluded, requestedNdx, ct),
+                channel.Writer, outbound, entries, destinationDirectory, channel.Session,
+                skipped, excluded, requestedNdx, ct),
             (requestedNdx, ct) => receiver.ReceiveUntilDoneAsync(requestedNdx, ct),
             cancellationToken);
 
         // ---- phase 1 (redo) + the measured DONE#2/#3/#4 burst ---------------------------------
         List<int> failed = await RunPhaseAsync(
-            (requestedNdx, ct) => WriteRedoRequestsAsync(channel.Writer, outbound, redo, requestedNdx, ct),
+            (requestedNdx, ct) => WriteRedoRequestsAsync(
+                channel.Writer, outbound, entries, destinationDirectory, channel.Session, redo, requestedNdx, ct),
             (requestedNdx, ct) => receiver.ReceiveUntilDoneAsync(requestedNdx, ct),
             cancellationToken);
 
@@ -163,6 +166,7 @@ public static class PullSession
             entries,
             receiver.TransferredFiles,
             receiver.TransferredBytes,
+            receiver.MatchedBytes,
             [.. redo.Select(n => entries[n].Name)],
             [.. failed.Select(n => entries[n].Name)],
             skipped,
@@ -235,15 +239,11 @@ public static class PullSession
         writer.Write(buffer[..length]);
     }
 
-    /// <summary>A file missing locally: ITEM_TRANSFER|ITEM_IS_NEW and the all-zero sum head
-    /// ("send me everything"), exactly the captured request shape 01 00 A0 + 16 zeros.</summary>
-    private static void WriteTransferRequest(MultiplexWriter writer, NdxCodec codec, int ndx) =>
-        WriteTransferRequest(writer, codec, ndx, ItemFlags.Transfer | ItemFlags.IsNew);
-
+    /// <summary>A full-transfer request (no basis, or one we couldn't open): iflags as given, plus
+    /// the all-zero sum head ("send me everything"). For a missing file this is exactly the
+    /// captured request shape 01 00 A0 + 16 zeros (ITEM_TRANSFER|ITEM_IS_NEW).</summary>
     private static void WriteTransferRequest(MultiplexWriter writer, NdxCodec codec, int ndx, ItemFlags iflags)
     {
-        // No delta support yet (P6): every request — new file or stale existing one — sends the
-        // all-zero sum head, asking for the whole file back.
         WriteNdxAndFlags(writer, codec, ndx, iflags);
         Span<byte> nullHead = stackalloc byte[SumHeader.Size];
         SumHeader.Null.Write(nullHead);
@@ -334,6 +334,7 @@ public static class PullSession
         NdxCodec codec,
         IReadOnlyList<FileEntry> entries,
         string destinationDirectory,
+        SessionContext session,
         List<(string Name, string Reason)> skipped,
         HashSet<int> excluded,
         ChannelWriter<int> requestedNdx,
@@ -357,7 +358,9 @@ public static class PullSession
                 if (!TryComputeRequestIflags(entry, destinationDirectory, out ItemFlags iflags))
                     continue; // already up to date — no request, no ndx, nothing on the wire
 
-                WriteTransferRequest(writer, codec, ndx, iflags);
+                await WriteRegularFileRequestAsync(
+                    writer, codec, ndx, iflags, entry, destinationDirectory, session,
+                    s2Length: null, cancellationToken);
                 await writer.FlushAsync(cancellationToken);
                 await requestedNdx.WriteAsync(ndx, cancellationToken);
             }
@@ -373,19 +376,87 @@ public static class PullSession
     }
 
     /// <summary>
+    /// P6: builds a real signature request (sum head + block sums) for a regular file that already
+    /// exists locally, instead of P4's all-zero "send everything" head. Opens the current on-disk
+    /// bytes as a basis via <see cref="BasisFileStore"/>, generates the signature over them, then
+    /// closes the handle again immediately — <see cref="ReplyReceiver.ReceiveIntoFileAsync"/> opens
+    /// its own basis handle later for reconstruction (reopen-in-receiver design, see there), so the
+    /// two never overlap and both see identical bytes as long as nothing else writes the file
+    /// meanwhile, which holds here (single-threaded request loop, destination untouched until the
+    /// reply for this very ndx is received).
+    /// </summary>
+    /// <param name="iflags">Already excludes <see cref="ItemFlags.IsNew"/> for any file with a basis
+    /// to sign; a missing file (that flag set) always falls straight through to a full transfer.</param>
+    /// <param name="s2Length">Null for the phase-0 derived truncation; the redo caller passes
+    /// <c>MIN(16, xfer_sum_len)</c> per <c>docs/transfer-spec.md</c> §6.</param>
+    private static async Task WriteRegularFileRequestAsync(
+        MultiplexWriter writer,
+        NdxCodec codec,
+        int ndx,
+        ItemFlags iflags,
+        FileEntry entry,
+        string destinationDirectory,
+        SessionContext session,
+        int? s2Length,
+        CancellationToken cancellationToken)
+    {
+        if (iflags.HasFlag(ItemFlags.IsNew))
+        {
+            // Missing locally: no basis is possible, full transfer regardless of phase.
+            WriteTransferRequest(writer, codec, ndx, iflags);
+            return;
+        }
+
+        string path = LocalPath(destinationDirectory, entry);
+        FileStream? basis = BasisFileStore.Open(path);
+        if (basis is null)
+        {
+            // Locked or vanished between the fast-path check and here: fall back to a full
+            // transfer rather than failing the whole session over one file.
+            WriteTransferRequest(writer, codec, ndx, iflags);
+            return;
+        }
+
+        SignatureResult signature;
+        await using (basis)
+        {
+            signature = await SignatureGenerator.GenerateAsync(
+                basis, session.TransferChecksum, session.ChecksumSeed, session.ChecksumSeedFix,
+                s2Length: s2Length, cancellationToken: cancellationToken);
+        }
+
+        WriteNdxAndFlags(writer, codec, ndx, iflags);
+        writer.Write(signature.Wire);
+    }
+
+    /// <summary>
     /// Phase-1 (redo) request writer: re-requests every ndx the sender reported a checksum
-    /// mismatch for, then the measured DONE#2/#3/#4 burst that closes this phase.
+    /// mismatch for, then the measured DONE#2/#3/#4 burst that closes this phase. Same iflags
+    /// computation as phase 0 (capture-pinned: the redo request is indistinguishable in shape,
+    /// e.g. <c>0x8008</c> again for a mtime-only mismatch) but a full-length s2length — the basis
+    /// on disk is unchanged, since a failed phase-0 receive discards its temp file and never
+    /// touches the destination.
     /// </summary>
     private static async Task WriteRedoRequestsAsync(
         MultiplexWriter writer,
         NdxCodec codec,
+        IReadOnlyList<FileEntry> entries,
+        string destinationDirectory,
+        SessionContext session,
         List<int> redo,
         ChannelWriter<int> requestedNdx,
         CancellationToken cancellationToken)
     {
+        int redoS2Length = Math.Min(16, StrongChecksum.DigestLength(session.TransferChecksum));
         foreach (int ndx in redo)
         {
-            WriteTransferRequest(writer, codec, ndx);
+            FileEntry entry = entries[ndx];
+            if (!TryComputeRequestIflags(entry, destinationDirectory, out ItemFlags iflags))
+                iflags = ItemFlags.Transfer; // still redoing even if a race made this look up to date
+
+            await WriteRegularFileRequestAsync(
+                writer, codec, ndx, iflags, entry, destinationDirectory, session,
+                s2Length: redoS2Length, cancellationToken);
             await writer.FlushAsync(cancellationToken);
             await requestedNdx.WriteAsync(ndx, cancellationToken);
         }
@@ -484,6 +555,7 @@ public static class PullSession
 
         public int TransferredFiles { get; private set; }
         public long TransferredBytes { get; private set; }
+        public long MatchedBytes { get; private set; }
 
         /// <summary>
         /// Reads replies for one phase, growing the expectation set from <paramref name="requestedNdx"/>
@@ -561,17 +633,43 @@ public static class PullSession
 
             try
             {
+                // Reopen-in-receiver design (see WriteRegularFileRequestAsync): the request writer
+                // already closed its own basis handle right after signing it, so opening a fresh one
+                // here targets whatever is on disk *now*, which may differ from what was signed if
+                // the file was deleted/locked/truncated in between. A null (or short) basis here is
+                // survivable, not a protocol error: FileReceiver zero-fills the missing bytes for any
+                // block-reference token (matching rsync's map_ptr behavior for a changed file), which
+                // makes the whole-file checksum trailer below mismatch and routes this file through
+                // the normal redo path — the next phase re-signs from the current on-disk state (or
+                // sends a full-transfer head if the file is gone). Only a genuinely hostile/desynced
+                // reply (out-of-range block index, or a block reference inside an actual
+                // full-transfer request) still throws out of FileReceiver.
                 FileReceiveResult received;
-                await using (var temp = new FileStream(tempPath, FileMode.Create, FileAccess.Write))
+                FileStream? basis = BasisFileStore.Open(finalPath);
+                try
                 {
-                    received = await FileReceiver.ReceiveAsync(
-                        channel.Reader,
-                        temp,
-                        channel.Session.TransferChecksum,
-                        channel.Session.ChecksumSeed,
-                        channel.Session.Protocol,
-                        StrongChecksum.DigestLength(channel.Session.TransferChecksum),
-                        cancellationToken);
+                    await using (var temp = new FileStream(tempPath, FileMode.Create, FileAccess.Write))
+                    {
+                        received = await FileReceiver.ReceiveAsync(
+                            channel.Reader,
+                            temp,
+                            channel.Session.TransferChecksum,
+                            channel.Session.ChecksumSeed,
+                            channel.Session.Protocol,
+                            StrongChecksum.DigestLength(channel.Session.TransferChecksum),
+                            cancellationToken,
+                            basis);
+                    }
+                }
+                finally
+                {
+                    // Must close before the move below: on Windows, File.Move(temp, final,
+                    // overwrite: true) throws UnauthorizedAccessException while ANY handle — even
+                    // FileShare.Delete — is still open on `final` (measured, BasisFileStoreTests).
+                    // Dispose-then-move keeps the existing overwrite-move path working, so no
+                    // delete-then-rename switch is needed here.
+                    if (basis is not null)
+                        await basis.DisposeAsync();
                 }
 
                 if (!received.ChecksumMatches)
@@ -603,6 +701,7 @@ public static class PullSession
 
                 TransferredFiles++;
                 TransferredBytes += received.BytesWritten;
+                MatchedBytes += received.MatchedBytes;
                 return true;
             }
             finally

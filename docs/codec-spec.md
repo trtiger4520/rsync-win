@@ -496,6 +496,12 @@ MD5 without the flag:               seed != 0: MD5(data ++ seed_le4)   — APPEN
                                     seed == 0 (either): MD5(data)
 XXH64:  value = XXH64(data, (ulong)(long)seedInt32)   — numeric seed, SIGN-extended;
         no zero short-circuit (0 is just seed 0)
+XXH128 (capture-pinned, ssh31-pull-delta 429/429 blocks @ s2length=2; ssh31-pull-redo 2048/2048
+        @ s2length=16, high64 verified — xxh3-64 excluded):
+        value = XXH128(data, (ulong)(long)seedInt32) — same numeric-seed/sign-extension/no-short-
+        circuit rule as XXH64; wire is low64 LE ∥ high64 LE (16 bytes), then prefix-truncated to
+        s2length like every other algorithm here. Sign-extension of a NEGATIVE seed remains
+        INFERRED (no captured session has used one).
 ```
 CF_CHKSUM_SEED_FIX is bit `1<<5` (0x20) of the compat_flags varint — key off the bit, never the
 peer's version string.
@@ -574,10 +580,11 @@ XXH64 block "abc" seed -1 (sign-extended to 0xFFFFFFFFFFFFFFFF) = 0x28306E589CC0
    locating mtime vectors requires XMIT_SAME_TIME clear).
 6. Whether recv_file_entry rejects negative decoded file lengths (our flist layer rejects
    size < 0 regardless).
-7. Redo-phase full-length s2length live capture (source-confirmed only).
+7. ~~Redo-phase full-length s2length live capture~~ — resolved (P6, `ssh31-pull-redo`; §10 above).
 8. sum-head captures for flength in (490000, 495616), ~1 MB, ~1 GB, >= 2^34 (worked examples
    above predict the values).
-9. xxh3/xxh128 seeded variants before ever advertising them (only xxh64 verified here).
+9. xxh3 seeded variants before ever advertising it (xxh128 now capture-pinned, §10 above; xxh3
+   remains unverified).
 
 ---
 

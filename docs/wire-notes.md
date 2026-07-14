@@ -46,6 +46,7 @@ Record the source of every ported table in a comment next to it.
 | Rolling weak checksum | **measured** | every `--debug=deltasum4` chunk sum reproduced; signed-char pinned |
 | MD4 | **verified** | RFC 1320 suite + openssl legacy provider |
 | Seeded strong-sum variants (MD5/xxh64 block vs whole-file) | **implemented vs spec vectors** | final live pin lands with the P4 delta transfer |
+| xxh128 block-sum seed rule (numeric seed, sign-extended, no zero short-circuit) | **capture-pinned** | `ssh31-pull-delta` (429/429 blocks, s2length=2) + `ssh31-pull-redo` (2048/2048, s2length=16, high64 verified) |
 | Sum head codec + validation | **implemented** | measured 300000 head + spec vectors; null head observed in captures |
 | NDX_DONE phase choreography | **capture-pinned** | `docs/transfer-spec.md` §5: c2s @31 = #1, #2#3#4 burst, goodbye #5; s2c = echo#1, echo#2+final#3, stats+goodbye#4 (@30: 4/3, no goodbye) |
 | Token stream (plain LE int32; literal/ref/end) | **capture-pinned** | every token of three captures decoded; delta capture pins the remainder rule on the last block |
@@ -82,8 +83,17 @@ whole-file verification, one-retry redo list, measured DONE choreography), `File
 pull replays through `PullSession` (7 files, SHA-256-pinned, trailers genuinely verified) and our
 generator's demuxed request stream is byte-identical to the captured client's. Live gate: pulling
 a whole tree (UTF-8 + space names) over ssh.exe is SHA-256-identical to the container and the
-remote rsync exits **0**. Still uncaptured: `--delete` del-stats, induced-mismatch redo,
+remote rsync exits **0**. Still uncaptured: `--delete` del-stats,
 MSG_NO_SEND/MSG_IO_ERROR traffic (transfer-spec §10).
+
+Block strong sums @31/xxh128 (capture-pinned, ssh31-pull-delta, seed 0x6A4D9FD7): XXH3-128(block,
+seed=(int64)checksum_seed), low64 LE ∥ high64 LE (trailer order), prefix-truncated to s2length; weak
+sum unchanged and seed-free (429/429). Full-length confirmation 2048/2048 via ssh31-pull-redo (high64
+verified — xxh3-64 excluded). Sign-extension of a negative seed remains INFERRED.
+
+Redo phase (capture-pinned, ssh31-pull-redo): redo request sits between DONE#1/#2 with the SAME
+iflags and s2length=16; ndx codec state persists across phases both directions (ndx 0 re-encodes
+FE 00 00). No redo message exists on the wire; the server learns only from the phase-1 request.
 
 Post-review hardening (adversarial review, three confirmed findings): `LocalPath` rejects
 Windows-only escapes the Unix-centric flist validation cannot see (`\` separators, drive/ADS
@@ -242,6 +252,14 @@ rsync ≥ 3.2.7) exists beyond the classic 8 flags. Assert `CF_INC_RECURSE` clea
 - **A zero-length `MSG_DATA` frame is a keep-alive, not EOF.**
 - **A whole-file checksum mismatch triggers a redo** in a later phase. That is *why* there are
   multiple phases and multiple `NDX_DONE` markers. Not optional.
+- **A missing/short basis mid-transfer is not a protocol error.** `FileReceiver` zero-fills the
+  unread bytes for a block-reference token when the basis is null or shorter than the signature
+  claims (deleted/locked/truncated in the window between signing the request and consuming the
+  reply) — matching rsync's `fileio.c` `map_ptr` behavior of zero-filling short reads on a changed
+  file ("the file has changed mid transfer"). The whole-file trailer then legitimately mismatches
+  and the file is routed through the ordinary redo path instead of aborting the whole session. Only
+  an out-of-range block index, or a block reference inside an actual full-transfer request, is still
+  a hard protocol error (hostile/desynced peer, not a changed file).
 - **File-list order is ordinal byte order.** Any culture-aware or case-insensitive compare desyncs
   the positional index against the server.
 - **ssh child process:** use `BaseStream` only; pump stdin/stdout/stderr on three concurrent loops or
@@ -276,3 +294,9 @@ rsync ≥ 3.2.7) exists beyond the classic 8 flags. Assert `CF_INC_RECURSE` clea
   before advertising xxh64
 - Daemon `@RSYNCD` auth digest specifics for a modern `rsyncd` — P8 (note: no binary version ints
   on daemon sockets, see the gating-rules section)
+- Redo `s2length` for xxh64/xxh3 (`MIN(16, xfer_sum_len)` = 8, per transfer-spec.md §6 and the
+  CVE-2024-12084 fix) is spec-derived only, never capture-observed — pin it by capture before
+  offering xxh64/xxh3 in our checksum-negotiation string (still md5-only, wire-notes.md §Checksum
+  negotiation)
+- `SignatureGenerator` buffers the whole signature (`count * entry` bytes) in one array — fine at
+  today's basis sizes, but stream it before targeting multi-TB basis files

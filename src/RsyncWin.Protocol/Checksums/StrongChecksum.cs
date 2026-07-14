@@ -18,10 +18,10 @@ public enum ChecksumAlgorithm
     XxHash64,
 
     /// <summary>
-    /// xxHash128 (negotiated "xxh128") — whole-file sums only for now. The whole-file form is
-    /// capture-pinned (every captured trailer recomputes as XXH128 with seed 0, emitted low64 LE
-    /// then high64 LE); the per-block seed rules are NOT yet golden-vectored, so block sums throw
-    /// until P6 pins them. Do not put this in a production offer before then.
+    /// xxHash128 (negotiated "xxh128"). Whole-file sums are seed-0 (capture-pinned, every
+    /// captured trailer recomputes as XXH128 with seed 0); block sums use the session seed
+    /// (capture-pinned against <c>ssh31-pull-delta</c>, 429/429 blocks) — see
+    /// <see cref="ComputeBlockSum"/>. Both emit low64 LE then high64 LE.
     /// </summary>
     XxHash128,
 }
@@ -36,8 +36,8 @@ public enum ChecksumAlgorithm
 /// additionally confirmed against the canonical xxhash library). The rules:
 /// <list type="bullet">
 /// <item><b>Block sums</b>: MD4 appends the seed (skip when 0); MD5 prepends when
-/// <c>CF_CHKSUM_SEED_FIX</c> was negotiated, else appends (skip when 0); xxHash64 uses the seed
-/// as its numeric seed, sign-extended, with no zero short-circuit.</item>
+/// <c>CF_CHKSUM_SEED_FIX</c> was negotiated, else appends (skip when 0); xxHash64/xxHash128 use
+/// the seed as their numeric seed, sign-extended, with no zero short-circuit.</item>
 /// <item><b>Whole-file sums</b>: proto-29 MD4 prepends the seed <em>unconditionally</em> — the one
 /// place the zero short-circuit does not apply; negotiated MD4/MD5 take no seed at all; xxHash64
 /// always uses seed 0.</item>
@@ -101,8 +101,15 @@ public static class StrongChecksum
                 return 8;
             }
             case ChecksumAlgorithm.XxHash128:
-                throw new NotSupportedException(
-                    "xxh128 block-sum seed rules are not golden-vectored yet (P6) — never offer xxh128 for delta transfers");
+            {
+                // Capture-pinned against ssh31-pull-delta (429/429 blocks): numeric seed,
+                // SIGN-extended like XxHash64Block above, no zero short-circuit. Same low64-then-
+                // high64 LE order as the whole-file trailer — never memcpy the hash span.
+                UInt128 value = XxHash128.HashToUInt128(block, seed);
+                BinaryPrimitives.WriteUInt64LittleEndian(digest, (ulong)value);
+                BinaryPrimitives.WriteUInt64LittleEndian(digest[8..], (ulong)(value >> 64));
+                return 16;
+            }
             default:
                 throw new ArgumentOutOfRangeException(nameof(algorithm));
         }

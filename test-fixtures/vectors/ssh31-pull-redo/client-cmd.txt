@@ -1,0 +1,2 @@
+client: rsync --protocol=31 -t --no-whole-file --bwlimit=200 fake:/t/redo/big.bin /t/redodst/
+exit=0

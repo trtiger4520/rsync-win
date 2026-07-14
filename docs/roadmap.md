@@ -20,13 +20,13 @@
 | P3 | Multiplex + filter send + flist receive (list-only) | **DONE** | `cd61fc4` — list-only against real rsync exits 0 |
 | P4 | Pull transfer (THE interop milestone) | **DONE** | `4683481` — whole tree over ssh.exe SHA-256-identical, remote exit 0; adversarial review findings fixed |
 | P5 | Recursive pull polish (fast path, sanitization, Channels) | **DONE** | `P5 complete` commit — fast path pinned byte-exact by `ssh31-pull-uptodate`/`-partial` vectors; live gates 7/7 incl. re-run-transfers-nothing + hostile-name sanitization; CLI wired; 4 adversarial findings fixed |
-| P6 | Delta efficiency (basis matching) | **NEXT** | — |
-| P7 | Push (sender role) | pending | — |
+| P6 | Delta efficiency (basis matching) | **DONE** | `P6 complete` commit — xxh128 block sums capture-pinned (429/429 + 2048/2048 full-length via `ssh31-pull-redo`); delta replay + redo request bytes golden; live gate: 8-byte edit of 4 MiB re-pulls literal 2048 / matched 4,192,256, EXACTLY equal to real rsync `--stats`; zero-fill degrade on changed basis |
+| P7 | Push (sender role) | **NEXT** | — |
 | P8 | Daemon transport (`rsync://`) | pending | — |
 | P9 | Polish (`--delete`, `-z`, flag surface, exit codes) | pending | — |
 
-Estimated effort remaining (active agent working hours, from P1–P5 measured pace):
-P6 ≈ 7–12 h (hardest; critical path for P7), P7 ≈ 4–7 h, P8 ≈ 3–5 h, P9 ≈ 2–4 h.
+Estimated effort remaining (active agent working hours, from P1–P6 measured pace):
+P7 ≈ 4–7 h, P8 ≈ 3–5 h, P9 ≈ 2–4 h.
 
 ## The working method (follow this loop every phase)
 
@@ -92,16 +92,16 @@ Goal: a near-identical basis file transfers only changed blocks. Hardest remaini
 single byte wrong in the rolling checksum is a silent full resend.
 
 Tasks:
-- [ ] `SignatureGenerator` — block the basis file with `sum_sizes_sqroot` sizing and emit real
+- [x] `SignatureGenerator` — block the basis file with `sum_sizes_sqroot` sizing and emit real
       sum heads (count/blength/s2length/remainder) instead of P4's all-zero head. s2length =
       `MIN(16, xfer_sum_len)` rules per `transfer-spec.md`.
-- [ ] `RollingChecksum` integration on the receive path; `FileReceiver` block-reference tokens
+- [x] `RollingChecksum` integration on the receive path; `FileReceiver` block-reference tokens
       reconstruct from the basis (currently `NotSupportedException` outside full transfers).
-- [ ] **Pin xxh128 block-sum seed rules by capture** — `StrongChecksum.ComputeBlockSum` throws
+- [x] **Pin xxh128 block-sum seed rules by capture** — `StrongChecksum.ComputeBlockSum` throws
       for xxh128 until then; whole-file xxh128 is already pinned (seed 0, low64 LE then high64).
-- [ ] Capture an **induced-mismatch redo** (corrupt a basis mid-transfer) to pin the redo-phase
+- [x] Capture an **induced-mismatch redo** (corrupt a basis mid-transfer) to pin the redo-phase
       bytes (`transfer-spec.md` §10 lists this as uncaptured).
-- [ ] Basis-file random reads via `RsyncWin.Fs.BasisFileStore`.
+- [x] Basis-file random reads via `RsyncWin.Fs.BasisFileStore`.
 
 Verify: modify one block of a large file, re-pull; our `--stats`-equivalent shows literal ≪ file
 size and matched ≈ file size, cross-checked against real rsync's `--stats` for the same pair.

@@ -1,0 +1,7 @@
+rsync
+--server
+--sender
+-te.LsfxCIvu
+--bwlimit=200
+.
+/t/redo/big.bin

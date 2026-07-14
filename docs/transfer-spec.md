@@ -97,6 +97,11 @@ PROVENANCE: canonical-behavior `generator.c:check_for_finished_files` (redo bran
 - The sender does **not** mark redos in iflags or anywhere on the wire; its `FLAG_FILE_SENT` flip (short→full csum_length) is local state. The reply's echoed sum head carrying the full-length s2length is the only visible difference.
 - Phase-2 failure (redo's own trailer also mismatches): **no third attempt**. Receiver logs `ERROR: <name> failed verification -- update discarded.` as an `FERROR_XFER`-class message → sets the xfer-error flag → final client exit **23** (`RERR_PARTIAL`). (Vanished-file-only io_error instead yields exit 24.)
 - Sender aborts (exit 2) if any `ITEM_TRANSFER` request arrives after it has read the 2nd DONE — so never emit redo requests after DONE#2.
+- **ndx codec state persists across both phases** (capture-pinned, `ssh31-pull-redo`): the whole
+  session shares ONE `write_ndx` encoder per direction — a redo request for ndx 0 re-encodes as
+  `FE 00 00` (the persistent-state escape form: `diff = 0 - prevPositive(0) = 0`), never a fresh
+  `01`. No wire message announces a redo at all; the server (and, symmetrically, our own reader)
+  infers it purely from seeing the same ndx requested again after DONE#1.
 
 ## 7. Interleaved mux traffic during the transfer phase (pull)
 
@@ -128,9 +133,11 @@ PROVENANCE: NEWS.md 3.4.0–3.4.3 + code; flist-spec §9 already covers flist/me
 
 1. The c2s DONE#2/#3/#4 burst bytes at 31 with a real transfer (extends the measured list-only tail).
 2. A `--delete` run at 31: c2s `FF 02` + 5 varints and its s2c echo position.
-3. An induced-mismatch redo (truncate a basis mid-transfer or bit-flip): full-length sum head on the wire, phase-1 reply, phase-2 `ERROR ... failed verification` + exit 23.
-4. `MSG_NO_SEND` from a vanished file + end-of-pass `MSG_IO_ERROR` (expect exit 24).
-5. Token stream + trailer for: zero-length file, count=0 full transfer, and a delta with matches (verify remainder-block length handling on the last block).
+3. `MSG_NO_SEND` from a vanished file + end-of-pass `MSG_IO_ERROR` (expect exit 24).
+4. Token stream + trailer for: zero-length file, count=0 full transfer, and a delta with matches (verify remainder-block length handling on the last block).
+
+Resolved by capture (P6): an induced-mismatch redo — `ssh31-pull-redo` pins the full-length
+(s2length=16) sum head on the wire and the persistent ndx-codec re-encode (§6).
 
 ---
 
@@ -147,11 +154,23 @@ ssh30-pull-rt, ssh31-pull-delta). Highlights:
 - Delta capture: request carried sum head (429, 700, 2, 400) + 429×6B block sums; reply tokens
   `ref0, lit700, ref[2..213], lit700, ref[215..428], END` reconstruct exactly 300000 bytes with the
   remainder rule on block 428; reconstructed SHA-256 equals the full-transfer content.
-- Sections still uncaptured (pin in the phase that needs them): `--delete` del-stats echo, an
-  induced-mismatch redo, MSG_NO_SEND/MSG_IO_ERROR traffic.
+- Sections still uncaptured (pin in the phase that needs them): `--delete` del-stats echo,
+  MSG_NO_SEND/MSG_IO_ERROR traffic.
 
 Implementation gates in the test suite: `PullSessionReplayTests` replays the whole capture through
 `PullSession` (7 files reconstructed, SHA-256-pinned, xxh128 trailers genuinely verified) and
 asserts our generator's demuxed byte stream equals the captured client's exactly;
 `TokenStreamCaptureTests` pins the delta token semantics; the live gate pulls a tree over ssh.exe
 byte-identical with remote exit 0.
+
+## P6 additions: delta signatures + redo (capture-pinned)
+
+`ssh31-pull-delta` (single-file `--no-whole-file` pull) pins the generator's real signature request
+— sum head `(429, 700, 2, 400)` + 429 × 6-byte block entries — byte-exact against the captured
+client, and the reconstructed 300000-byte file SHA-256-matches the full-transfer content
+(`PullSessionReplayTests.DeltaReplay_SignsExistingBasisAndReconstructsByteExact`). `ssh31-pull-redo`
+(an induced whole-file-trailer mismatch) pins the redo request's full-length signature
+(s2length=16, count/blength/remainder unchanged from phase 0) and the persistent ndx-codec
+re-encode of the same ndx as `FE 00 00` between DONE#1 and the DONE#2/#3/#4 burst — exercised
+hermetically (no capture-fidelity concern; the shape is fully spec'd) in
+`PullSessionRedoTests.InducedMismatch_RedoesWithPersistentNdxState_AndFullLengthSignature`.

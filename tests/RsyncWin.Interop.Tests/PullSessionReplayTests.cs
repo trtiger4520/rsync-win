@@ -1,7 +1,11 @@
+using System.Buffers.Binary;
 using System.Security.Cryptography;
 using RsyncWin.Engine;
+using RsyncWin.Protocol;
+using RsyncWin.Protocol.Delta;
 using RsyncWin.Protocol.Mux;
 using RsyncWin.Protocol.Session;
+using RsyncWin.Protocol.Wire;
 
 namespace RsyncWin.Interop.Tests;
 
@@ -250,7 +254,11 @@ public class PullSessionReplayTests
     public async Task PartialReplay_TransfersOnlyTheTwoStaleFiles()
     {
         // b001 is stale in content+mtime (iflags 0x800C); b002 has identical bytes but an older
-        // mtime (iflags 0x8008, --whole-file so no delta). Every other file stays on the fast path.
+        // mtime (iflags 0x8008). The capture itself was recorded with `--whole-file` (a mode we do
+        // not model — P6 always signs an existing basis instead), so its two per-file null sum
+        // heads are patched to the real signatures below before the generator-bytes comparison;
+        // every other byte (filter list, ndx/iflags encoding, DONE choreography) stays pinned as
+        // captured. Every other file stays on the fast path.
         string dest = Path.Combine(Path.GetTempPath(), $"rsyncwin-partial-{Guid.NewGuid():N}");
         try
         {
@@ -258,13 +266,15 @@ public class PullSessionReplayTests
 
             var staleMtime = new DateTime(2019, 1, 1, 0, 0, 0, DateTimeKind.Utc);
             string b001 = Path.Combine(dest, "b001_small.txt");
-            await File.WriteAllTextAsync(b001, "stale\n");
+            byte[] b001StaleContent = "stale\n"u8.ToArray();
+            await File.WriteAllBytesAsync(b001, b001StaleContent);
             File.SetLastWriteTimeUtc(b001, staleMtime);
             original.Remove("b001_small.txt");
 
             string b002 = Path.Combine(dest, "b002_64k.bin");
             // Same size as the flist entry, arbitrary bytes — only the mtime is stale for b002.
-            await File.WriteAllBytesAsync(b002, new byte[65536]);
+            byte[] b002StaleContent = new byte[65536];
+            await File.WriteAllBytesAsync(b002, b002StaleContent);
             File.SetLastWriteTimeUtc(b002, staleMtime);
             original.Remove("b002_64k.bin");
 
@@ -303,6 +313,79 @@ public class PullSessionReplayTests
             byte[] ours = Demux(written[ourPrologue..]);
 
             byte[] captured = Capture("ssh31-pull-partial", "c2s.bin");
+            int capturedPrologue = 4 + 1 + "xxh128 xxh3 xxh64 md5 md4".Length;
+            byte[] theirs = Demux(captured[capturedPrologue..]);
+
+            // The negotiated seed/algorithm/seed-fix came off the real captured wire bytes — reuse
+            // them (not hardcoded) so this stays a genuine independent check of SignatureGenerator's
+            // production wiring, not a tautology against our own request bytes.
+            SignatureResult b001Signature = await SignatureGenerator.GenerateAsync(
+                new MemoryStream(b001StaleContent, writable: false),
+                result.Session.TransferChecksum, result.Session.ChecksumSeed, result.Session.ChecksumSeedFix);
+            SignatureResult b002Signature = await SignatureGenerator.GenerateAsync(
+                new MemoryStream(b002StaleContent, writable: false),
+                result.Session.TransferChecksum, result.Session.ChecksumSeed, result.Session.ChecksumSeedFix);
+            byte[] expected = PatchNullHeadsWithSignatures(theirs, [b001Signature.Wire, b002Signature.Wire]);
+
+            Assert.Equal(expected, ours);
+        }
+        finally
+        {
+            try
+            {
+                Directory.Delete(dest, recursive: true);
+            }
+            catch (DirectoryNotFoundException)
+            {
+            }
+        }
+    }
+
+    [Fact]
+    public async Task DeltaReplay_SignsExistingBasisAndReconstructsByteExact()
+    {
+        // ssh31-pull-delta is a genuine `--no-whole-file` single-file capture (client-cmd/argv.txt:
+        // no --recurse, one path naming the file directly), so — unlike the whole-file captures
+        // above — its request bytes are a real signature and need no patching: this is P6's core
+        // byte-exact generator gate.
+        string dest = Path.Combine(Path.GetTempPath(), $"rsyncwin-delta-{Guid.NewGuid():N}");
+        try
+        {
+            Directory.CreateDirectory(dest);
+
+            // The exact basis the capture ran against: result.bin (post-transfer content) with the
+            // two regions the capture actually sent as literals patched back to their pre-transfer
+            // bytes (docs/wire-notes.md / SignatureGeneratorTests' recipe).
+            byte[] basis = Capture("ssh31-pull-delta", "result.bin");
+            "XXXXXXXX"u8.ToArray().CopyTo(basis, 1000);
+            "YYYY"u8.ToArray().CopyTo(basis, 150000);
+
+            string target = Path.Combine(dest, "b003_300k.bin");
+            await File.WriteAllBytesAsync(target, basis);
+            // Size already matches the flist entry, so only the mtime is stale — iflags 0x8008
+            // (TRANSFER|REPORT_TIME), pinned by FileReceiverCaptureTests against the same capture.
+            File.SetLastWriteTimeUtc(target, new DateTime(2019, 1, 1, 0, 0, 0, DateTimeKind.Utc));
+
+            await using var transport = new ScriptedTransport(Capture("ssh31-pull-delta", "s2c.bin"));
+            PullSession.Result result = await PullSession.RunAsync(
+                transport, new ServerArgvBuilder { Sender = true, Paths = ["/t/tree/b003_300k.bin"] },
+                dest, handshake: Xxh128);
+
+            Assert.Equal(1, result.TransferredFiles);
+            Assert.Empty(result.RedoneFiles);
+            Assert.Empty(result.FailedFiles);
+            Assert.True(result.MatchedBytes > 290000,
+                $"expected the vast majority of the 300000 bytes to be matched, got {result.MatchedBytes}");
+
+            Assert.Equal(
+                "417198a0fb41a4c8c340fdd4a58ac90be823a30df37f0386b7773a4246dea8db",
+                Convert.ToHexStringLower(SHA256.HashData(await File.ReadAllBytesAsync(target))));
+
+            byte[] written = await transport.WrittenBytesAsync();
+            int ourPrologue = 4 + 1 + "xxh128".Length;
+            byte[] ours = Demux(written[ourPrologue..]);
+
+            byte[] captured = Capture("ssh31-pull-delta", "c2s.bin");
             int capturedPrologue = 4 + 1 + "xxh128 xxh3 xxh64 md5 md4".Length;
             byte[] theirs = Demux(captured[capturedPrologue..]);
 
@@ -380,5 +463,47 @@ public class PullSessionReplayTests
             offset += header.PayloadLength;
         }
         return logical.ToArray();
+    }
+
+    /// <summary>
+    /// Rewrites a `--whole-file`-captured demuxed c2s request stream so it can still serve as a
+    /// byte-exact oracle after P6: every 16-byte null sum head that follows an
+    /// <see cref="ItemFlags.Transfer"/> request is replaced, in order, with the next entry of
+    /// <paramref name="signatureWiresInOrder"/> (a real <see cref="SignatureGenerator"/> head+entries
+    /// blob). The leading 4-byte empty filter list, every ndx/iflags encoding, and everything from
+    /// the first <c>NDX_DONE</c> onward (redo burst, goodbye) is copied through untouched — those
+    /// bytes are unaffected by whole-file vs. delta and stay pinned by the capture.
+    /// </summary>
+    private static byte[] PatchNullHeadsWithSignatures(byte[] demuxed, IReadOnlyList<byte[]> signatureWiresInOrder)
+    {
+        var codec = new NdxCodec();
+        var output = new List<byte>(demuxed.Length);
+        output.AddRange(demuxed.AsSpan(0, 4).ToArray()); // empty filter list int32(0) — untouched
+        int offset = 4;
+        int nextSignature = 0;
+
+        while (offset < demuxed.Length)
+        {
+            (int ndx, int consumed) = codec.Read(demuxed.AsSpan(offset));
+            output.AddRange(demuxed.AsSpan(offset, consumed).ToArray());
+            offset += consumed;
+            if (ndx == RsyncConstants.NdxDone)
+            {
+                output.AddRange(demuxed.AsSpan(offset).ToArray()); // redo burst + goodbye, untouched
+                break;
+            }
+
+            var iflags = (ItemFlags)BinaryPrimitives.ReadUInt16LittleEndian(demuxed.AsSpan(offset, 2));
+            output.AddRange(demuxed.AsSpan(offset, 2).ToArray());
+            offset += 2;
+
+            if (iflags.HasFlag(ItemFlags.Transfer))
+            {
+                output.AddRange(signatureWiresInOrder[nextSignature++]);
+                offset += SumHeader.Size; // skip the captured null head this replaces
+            }
+        }
+
+        return [.. output];
     }
 }

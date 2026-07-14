@@ -111,11 +111,59 @@ public class StrongChecksumTests
         => Assert.Equal("7f498d4624c30160d8984701d306aa99", FileSum(ChecksumAlgorithm.XxHash128, Seed, 31, []));
 
     [Fact]
-    public void XxHash128Block_RefusesUntilSeedRulesArePinned()
+    public void XxHash128Block_UsesNumericSeed_LowHalfThenHighHalf_LittleEndian()
+        // Recomputed via XxHash128.HashToUInt128("abc", Seed), low64 LE then high64 LE.
+        => Assert.Equal("2791f6cd464913ceddc49a22946c9bd8", BlockSum(ChecksumAlgorithm.XxHash128, Seed, false, Abc));
+
+    [Fact]
+    public void XxHash128Block_SeedZero_DoesNotShortCircuit()
+        // Seed 0 is just... seed 0 — recomputed via XxHash128.HashToUInt128("abc", 0).
+        => Assert.Equal("50392f89945faf7885613a73b65ab006", BlockSum(ChecksumAlgorithm.XxHash128, 0, false, Abc));
+
+    // ---- xxh128 block sums, golden vectors from test-fixtures/vectors/ssh31-pull-delta -------
+    // (300000-byte basis, checksum_seed=0x6A4D9FD7, sum head count=429 blength=700 s2length=2
+    // remainder=400; c2s.bin body starts at offset 61, 6-byte entries: 4-byte LE weak + 2-byte
+    // strong prefix). Basis reconstructed from result.bin with the two known overwrites
+    // ('XXXXXXXX' at 1000, 'YYYY' at 150000) undone. VERIFIED 429/429 blocks against c2s.bin.
+
+    private const int DeltaSeed = unchecked((int)0x6A4D9FD7);
+
+    private static byte[] ReconstructDeltaBasis()
     {
-        byte[] digest = new byte[16];
-        Assert.Throws<NotSupportedException>(
-            () => StrongChecksum.ComputeBlockSum(ChecksumAlgorithm.XxHash128, Seed, false, Abc, digest));
+        byte[] basis = TestFixtures.Bytes("ssh31-pull-delta", "result.bin");
+        Encoding.ASCII.GetBytes("XXXXXXXX").CopyTo(basis, 1000);
+        Encoding.ASCII.GetBytes("YYYY").CopyTo(basis, 150000);
+        return basis;
+    }
+
+    public static TheoryData<int, int, string> DeltaCaptureBlocks() => new()
+    {
+        // (blockIndex, blockLength, expected 2-byte s2length prefix, hex)
+        { 0, 700, "776f" },
+        { 1, 700, "354a" }, // contains the 'XXXXXXXX' overwrite at file offset 1000
+        { 428, 400, "68ae" }, // tail block: remainder=400, not a full 700-byte block
+    };
+
+    [Theory]
+    [MemberData(nameof(DeltaCaptureBlocks))]
+    public void XxHash128Block_MatchesSsh31PullDeltaCapture(int blockIndex, int blockLength, string expectedPrefixHex)
+    {
+        byte[] basis = ReconstructDeltaBasis();
+        byte[] c2s = TestFixtures.Bytes("ssh31-pull-delta", "c2s.bin");
+
+        int offset = blockIndex * 700;
+        byte[] block = basis.AsSpan(offset, blockLength).ToArray();
+
+        Span<byte> digest = stackalloc byte[16];
+        StrongChecksum.ComputeBlockSum(ChecksumAlgorithm.XxHash128, DeltaSeed, false, block, digest);
+
+        const int s2Length = 2;
+        Assert.Equal(expectedPrefixHex, Convert.ToHexStringLower(digest[..s2Length].ToArray()));
+
+        // Cross-check against the exact bytes the generator sent for this block.
+        int entryOffset = 61 + blockIndex * 6;
+        byte[] expectedPrefix = c2s.AsSpan(entryOffset + 4, s2Length).ToArray();
+        Assert.Equal(expectedPrefix, digest[..s2Length].ToArray());
     }
 
     [Fact]
