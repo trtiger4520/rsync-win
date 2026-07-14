@@ -1,0 +1,6 @@
+rsync
+--server
+--sender
+-tr
+.
+/t/tree/

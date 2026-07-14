@@ -1,6 +1,9 @@
 # Normalize text in the repo, check out native on Windows.
 * text=auto
 
+# Shell scripts run inside Linux containers; CRLF would break them at the shebang.
+*.sh text eol=lf
+
 # Captured rsync wire vectors are BINARY. Line-ending normalization would silently corrupt them,
 # and a corrupted golden vector is worse than no vector: it makes a correct codec look broken.
 test-fixtures/** binary

@@ -1,0 +1,7 @@
+rsync
+--server
+--sender
+-tre.LsfxCIvu
+--list-only
+.
+/t/sizes/

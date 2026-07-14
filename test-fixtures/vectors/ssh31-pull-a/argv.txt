@@ -1,0 +1,6 @@
+rsync
+--server
+--sender
+-logDtpre.LsfxCIvu
+.
+/t/tree/

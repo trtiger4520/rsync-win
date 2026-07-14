@@ -1,0 +1,20 @@
+count=6 rem=596 blength=700 s2length=2 flength=4096
+chunk[0] offset=0 len=700 sum1=aae5f5b9
+chunk[1] offset=700 len=700 sum1=14fdfc05
+chunk[2] offset=1400 len=700 sum1=03f2025b
+chunk[3] offset=2100 len=700 sum1=e0f6fd48
+chunk[4] offset=2800 len=700 sum1=b9f0fb39
+chunk[5] offset=3500 len=596 sum1=d4b90489
+count=6 n=700 rem=596
+chunk[0] len=700 offset=0 sum1=aae5f5b9
+chunk[1] len=700 offset=700 sum1=14fdfc05
+chunk[2] len=700 offset=1400 sum1=03f2025b
+chunk[3] len=700 offset=2100 sum1=e0f6fd48
+chunk[4] len=700 offset=2800 sum1=b9f0fb39
+chunk[5] len=596 offset=3500 sum1=d4b90489
+chunk[0] of size 700 at 0 offset=0
+chunk[1] of size 700 at 700 offset=700
+chunk[2] of size 700 at 1400 offset=1400
+chunk[3] of size 700 at 2100 offset=2100
+chunk[4] of size 700 at 2800 offset=2800
+chunk[5] of size 596 at 3500 offset=3500

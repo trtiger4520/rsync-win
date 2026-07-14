@@ -1,0 +1,6 @@
+rsync
+--server
+--sender
+-te.LsfxCIvu
+.
+/t/tree/b003_300k.bin

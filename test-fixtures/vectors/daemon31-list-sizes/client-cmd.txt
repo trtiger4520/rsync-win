@@ -1,0 +1,2 @@
+client: rsync --protocol=31 -r --no-inc-recursive --list-only rsync://127.0.0.1:9000/sizes/
+exit=0
