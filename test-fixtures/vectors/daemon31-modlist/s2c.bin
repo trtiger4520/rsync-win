@@ -1,0 +1,5 @@
+@RSYNCD: 32.0 md5 md4
+tree           	
+push           	
+secret         	
+@RSYNCD: EXIT

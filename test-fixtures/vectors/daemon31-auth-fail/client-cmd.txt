@@ -1,0 +1,2 @@
+client: rsync --protocol=31 -rt --no-inc-recursive rsync://alice@127.0.0.1:9000/secret/ /t/dauth/
+exit=5

@@ -111,26 +111,42 @@ public static class PushSession
         var inbound = new NdxCodec();  // the server-generator's request ndx decoder
         var sender = new ReplySender(reader, writer, outbound, inbound, sortedEntries, session);
 
-        // ---- phase 0: serve every request until the server's DONE#1 -------------------------
-        await RunPhaseAsync(sender, cancellationToken);
-        WriteNdxDone(writer); // echo#1
-        await writer.FlushAsync(cancellationToken);
+        try
+        {
+            // ---- phase 0: serve every request until the server's DONE#1 ---------------------
+            await RunPhaseAsync(sender, cancellationToken);
+            WriteNdxDone(writer); // echo#1
+            await writer.FlushAsync(cancellationToken);
 
-        // ---- phase 1 (redo): serve any re-requests until the server's DONE#2 ----------------
-        await RunPhaseAsync(sender, cancellationToken);
-        WriteNdxDone(writer); // echo#2
+            // ---- phase 1 (redo): serve any re-requests until the server's DONE#2 -------------
+            await RunPhaseAsync(sender, cancellationToken);
+            WriteNdxDone(writer); // echo#2
 
-        await SessionSetup.ExpectNdxDoneAsync(reader, cancellationToken); // server's DONE#3 (final)
-        WriteNdxDone(writer); // our final#3 — ends the reply side
-        await writer.FlushAsync(cancellationToken);
+            await SessionSetup.ExpectNdxDoneAsync(reader, cancellationToken); // server's DONE#3 (final)
+            WriteNdxDone(writer); // our final#3 — ends the reply side
+            await writer.FlushAsync(cancellationToken);
 
-        await SessionSetup.ExpectNdxDoneAsync(reader, cancellationToken); // server's DONE#4
-        WriteNdxDone(writer); // goodbye#4
-        await writer.FlushAsync(cancellationToken);
+            await SessionSetup.ExpectNdxDoneAsync(reader, cancellationToken); // server's DONE#4
+            WriteNdxDone(writer); // goodbye#4
+            await writer.FlushAsync(cancellationToken);
 
-        // Server's own final goodbye (its DONE#5) — the stream ends exactly here, nothing more is
-        // read or written (no stats block on a push, docs/wire-notes.md "Push direction").
-        await SessionSetup.ExpectNdxDoneAsync(reader, cancellationToken);
+            // Server's own final goodbye (its DONE#5) — the stream ends exactly here, nothing more
+            // is read or written (no stats block on a push, docs/wire-notes.md "Push direction").
+            await SessionSetup.ExpectNdxDoneAsync(reader, cancellationToken);
+        }
+        catch (ProtocolException ex) when (serverMessages.Count > 0)
+        {
+            // MultiplexReader raises MSG_ERROR_EXIT as a bare ProtocolException carrying only the
+            // exit code — no message text (docs/daemon-spec.md §5: a read-only-module push sends
+            // MSG_ERROR text frames, then MSG_ERROR_EXIT with the real exit code). Fold whatever
+            // server text already landed in serverMessages into the exception so the CLI's
+            // "rsyncwin: {ex.Message}" actually shows the server's own words instead of a generic
+            // "peer signalled MSG_ERROR_EXIT" line, while keeping the same exit code.
+            string serverText = string.Join('\n', serverMessages
+                .Where(m => m.Tag is MessageTag.Error or MessageTag.ErrorXfer or MessageTag.Warning)
+                .Select(m => m.Text.TrimEnd('\n')));
+            throw new ProtocolException(ex.ExitCode, string.IsNullOrEmpty(serverText) ? ex.Message : serverText);
+        }
 
         return new Result(
             session,

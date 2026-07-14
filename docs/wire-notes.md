@@ -122,9 +122,14 @@ to the per-file retry-then-exit-23 lane; wire mtimes clamp to the settable Win32
   that is why a `--protocol=29` run shows plain `-tr` in the captured argv.
 - The compat varint is wire-compatible with the old `write_byte` form for values < 0x80, so a
   pre-3.2 server's single compat byte decodes fine through the varint reader.
-- **Daemon nuance for P8**: on `rsync://` sockets there are NO binary version ints — the version was
-  already negotiated via the textual `@RSYNCD: <ver>.<sub>` greeting, and `setup_protocol` skips the
-  binary exchange (`remote_protocol` already set). The rest of the prologue is unchanged.
+- **Daemon nuance (P8, VERIFIED)**: on `rsync://` sockets there are NO binary version ints — the
+  version was already negotiated via the textual `@RSYNCD: <ver>.<sub>` greeting, and
+  `setup_protocol` skips the binary exchange (`remote_protocol` already set). The rest of the
+  prologue is unchanged: `cmp` of `daemon31-pull-rt` against `ssh31-pull-rt` from the respective
+  prologue tails matches byte-for-byte. Compat varint / vstring / seed stay **pre-mux**; server
+  mux-out begins at the flist frame; `--protocol=N` lowers the textual greeting to `N.0`. Full
+  preamble byte layout (greeting, module line, AUTHREQD digest recipe, argv framing, in-mux
+  MSG_ERROR_EXIT with exit-code payload): `docs/daemon-spec.md`.
 
 ## Checksum negotiation (measured, rsync 3.4.3)
 
@@ -345,8 +350,10 @@ Further pins from the P7 decisive captures (`ssh31-push-uptodate` / `-delta` / `
   receive as `.<final>.<8-hex>.rsyncwin-tmp`, alongside `WindowsPathMapper` name sanitization
 - Checksum-negotiation winner rule observed live with a multi-name offer (`--debug=nstr`) — P4,
   before advertising xxh64
-- Daemon `@RSYNCD` auth digest specifics for a modern `rsyncd` — P8 (note: no binary version ints
-  on daemon sockets, see the gating-rules section)
+- ~~Daemon `@RSYNCD` auth digest specifics for a modern `rsyncd`~~ — resolved (P8, computationally
+  reproduced from `daemon31-auth-pull`/`-fail` and `daemon29-auth-pull`): reply digest =
+  `base64(MD5(password + challenge))` with trailing `=` stripped, MD5 even at protocol 29;
+  challenge = 22-char base64 of 16 random bytes. See `docs/daemon-spec.md` §2
 - Redo `s2length` for xxh64/xxh3 (`MIN(16, xfer_sum_len)` = 8, per transfer-spec.md §6 and the
   CVE-2024-12084 fix) is spec-derived only, never capture-observed — pin it by capture before
   offering xxh64/xxh3 in our checksum-negotiation string (still md5-only, wire-notes.md §Checksum
@@ -357,6 +364,20 @@ Further pins from the P7 decisive captures (`ssh31-push-uptodate` / `-delta` / `
   API); sources ≥ 2 GiB are rejected with an explicit failure rather than streamed — stream/map the
   source before advertising large-file push support (P7 deferral, mirrors the SignatureGenerator
   note above)
+- CLI quirk (pre-existing, observed during P8 smoke tests): an ssh endpoint whose host is
+  unreachable can surface as exit 12 ("stream ended after 0 of 4 expected bytes") instead of the
+  ssh-255 → exit 5 mapping, depending on which side fails first — revisit exit-code ordering in
+  P9's exit-code completeness pass
+- Protocol **29 session support is preamble/argv-deep only** (everywhere, not just daemon): the
+  29-era flist layout (1-byte xflags, 4-byte mtime, no varints) has no decode/encode path, so a
+  real 29-only peer would desync mid-flist. Daemon sessions floor the negotiation at 30 with a clear
+  error (P8); revisit if a real-world 29-only peer ever matters
+- On receiving `MSG_ERROR_EXIT`, a real protocol-31 client echoes an **empty (len-0)
+  `MSG_ERROR_EXIT` frame** before exiting (`daemon31-push-readonly` c2s offset 285). We surface the
+  error text and carried exit code but do not send the echo (needs a raw non-Data frame writer on
+  `MultiplexWriter`) — add the echo if a peer is ever observed waiting on it (P8 deferral; the
+  read-only-module live interop test exercises this path against rsyncd 3.4.3 and completes
+  without a hang, so the omission is empirically safe today)
 - `MatchSearcher`'s shrinking-tail weak-sum recompute is O(blength²) worst case (~8.6e9 byte-ops at
   the 131072 block-size cap) — replace with an incremental roll-out before pushing multi-GB files
   with huge blocks (P7 deferral, correctness unaffected)

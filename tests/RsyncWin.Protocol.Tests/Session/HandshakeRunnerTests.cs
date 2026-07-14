@@ -1,7 +1,9 @@
 using System.Buffers;
+using System.Buffers.Binary;
 using System.IO.Pipelines;
 using RsyncWin.Protocol.Checksums;
 using RsyncWin.Protocol.Session;
+using RsyncWin.Protocol.Wire;
 
 namespace RsyncWin.Protocol.Tests.Session;
 
@@ -144,5 +146,107 @@ public class HandshakeRunnerTests
 
         await Assert.ThrowsAsync<ArgumentException>(
             () => RunAsync([0x20, 0, 0, 0], options));
+    }
+
+    // ---- Daemon mode (PreNegotiatedProtocolVersion) ------------------------------------------
+    //
+    // A daemon (rsync://) session negotiates its protocol version via the textual "@RSYNCD: x.y"
+    // greeting, not the binary version ints. daemon31-pull-rt was captured from a real rsync 3.4.3
+    // daemon; per docs/wire-notes.md ("Daemon nuance for P8") the binary stream after the textual
+    // preamble is identical to the ssh path minus the two version int32s.
+
+    /// <summary>Finds the offset right after the textual "@RSYNCD:" preamble (two lines, LF-terminated).</summary>
+    private static int SkipTextualPreamble(byte[] bytes)
+    {
+        int firstLine = Array.IndexOf(bytes, (byte)'\n');
+        int secondLine = Array.IndexOf(bytes, (byte)'\n', firstLine + 1);
+        return secondLine + 1;
+    }
+
+    [Fact]
+    public async Task DaemonCapture_SkipsVersionInts_AndParsesTheRestOfThePrologue()
+    {
+        byte[] serverAll = TestFixtures.Bytes("daemon31-pull-rt", "s2c.bin");
+        byte[] binaryPhase = serverAll[SkipTextualPreamble(serverAll)..];
+
+        var run = await RunAsync(binaryPhase, new HandshakeOptions { PreNegotiatedProtocolVersion = 31 });
+
+        Assert.Equal(31, run.Context.Protocol);
+        Assert.Equal(0x1FE, run.Context.CompatFlags); // same compat bits as the ssh31 capture
+        Assert.True(run.Context.VarintFlistFlags);
+        Assert.Equal(ChecksumAlgorithm.Md5, run.Context.TransferChecksum);
+
+        // Independently walk the same bytes (compat varint, then the server's vstring reply) to
+        // find where the seed lives, instead of hardcoding its offset — the seed differs per
+        // capture run, so it must be read from the file, not pinned as a literal.
+        (int _, int compatConsumed) = VarintCodec.ReadVarint(binaryPhase);
+        (byte[] _, int vstringConsumed) = VstringCodec.Read(binaryPhase.AsSpan(compatConsumed));
+        int seedOffset = compatConsumed + vstringConsumed;
+        int expectedSeed = BinaryPrimitives.ReadInt32LittleEndian(binaryPhase.AsSpan(seedOffset, 4));
+
+        Assert.Equal(expectedSeed, run.Context.ChecksumSeed);
+
+        // No version ints in daemon mode: the client writes only its checksum-offer vstring.
+        Assert.Equal((byte[])[0x03, (byte)'m', (byte)'d', (byte)'5'], run.Written);
+
+        // The reader stops exactly on the first mux byte, taken from right after the seed.
+        byte[] expectedMuxStart = binaryPhase[(seedOffset + 4)..(seedOffset + 8)];
+        Assert.Equal(expectedMuxStart, await NextBytesAsync(run.Input, 4));
+    }
+
+    [Fact]
+    public async Task DaemonCapture_ClientWritesOnlyAVstring_NoLeadingVersionBytes()
+    {
+        // The real rsync client that produced this capture offers its full default list
+        // (xxh128 xxh3 xxh64 md5 md4); we only implement md5/md4/xxh64/xxh128 today (no xxh3), so
+        // our own offer is narrower and cannot equal the captured bytes verbatim. What IS pinned
+        // and checked here: the captured client segment is structurally exactly one vstring (no
+        // version ints, nothing trailing before mux) — the same shape our own daemon-mode write
+        // must produce for whatever we offer.
+        byte[] clientAll = TestFixtures.Bytes("daemon31-pull-rt", "c2s.bin");
+        int pos = SkipTextualPreamble(clientAll); // past "@RSYNCD: ...\n"
+
+        int treeLine = Array.IndexOf(clientAll, (byte)'\n', pos);
+        pos = treeLine + 1; // past "tree\n"
+
+        // NUL-terminated daemon args, ending at the first empty string (the list terminator).
+        while (true)
+        {
+            int nul = Array.IndexOf(clientAll, (byte)0, pos);
+            bool isEmpty = nul == pos;
+            pos = nul + 1;
+            if (isEmpty)
+                break;
+        }
+
+        (byte[] capturedOffer, int _) = VstringCodec.Read(clientAll.AsSpan(pos));
+        Assert.Contains("md5", System.Text.Encoding.ASCII.GetString(capturedOffer));
+
+        // Our own daemon-mode write, replayed against the same server capture as the first test.
+        byte[] serverAll = TestFixtures.Bytes("daemon31-pull-rt", "s2c.bin");
+        byte[] binaryPhase = serverAll[SkipTextualPreamble(serverAll)..];
+        var run = await RunAsync(binaryPhase, new HandshakeOptions { PreNegotiatedProtocolVersion = 31 });
+
+        (byte[] ourOffer, int ourConsumed) = VstringCodec.Read(run.Written);
+        Assert.Equal(run.Written.Length, ourConsumed); // nothing written but the vstring itself
+        Assert.Equal("md5", System.Text.Encoding.ASCII.GetString(ourOffer));
+    }
+
+    [Fact]
+    public async Task DaemonMode_Protocol29_MatchesTheSshPath_NoCompatNoWrite()
+    {
+        // Below 30 there is no compat varint and no vstring exchange on either path — only the
+        // seed is ever read. Daemon mode additionally skips the version ints, so nothing at all
+        // is written.
+        byte[] server = [0x11, 0x22, 0x33, 0x44]; // the seed, LE
+
+        var run = await RunAsync(server, new HandshakeOptions { PreNegotiatedProtocolVersion = 29 });
+
+        Assert.Equal(29, run.Context.Protocol);
+        Assert.Equal(0, run.Context.CompatFlags);
+        Assert.Equal(0x44332211, run.Context.ChecksumSeed);
+        Assert.Equal(ChecksumAlgorithm.Md4, run.Context.TransferChecksum); // pre-negotiation default
+        Assert.False(run.Context.MultiplexedOutput);
+        Assert.Empty(run.Written);
     }
 }

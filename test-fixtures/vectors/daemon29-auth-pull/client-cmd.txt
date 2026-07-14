@@ -1,0 +1,2 @@
+client: rsync --protocol=29 -rt rsync://alice@127.0.0.1:9000/secret/ /t/dauth29/
+exit=0

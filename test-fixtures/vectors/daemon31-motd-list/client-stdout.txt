@@ -1,0 +1,4 @@
+Welcome to the rsyncwin capture daemon
+second motd line
+
+tree           	

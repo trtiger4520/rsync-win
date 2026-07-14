@@ -22,11 +22,11 @@
 | P5 | Recursive pull polish (fast path, sanitization, Channels) | **DONE** | `P5 complete` commit — fast path pinned byte-exact by `ssh31-pull-uptodate`/`-partial` vectors; live gates 7/7 incl. re-run-transfers-nothing + hostile-name sanitization; CLI wired; 4 adversarial findings fixed |
 | P6 | Delta efficiency (basis matching) | **DONE** | `P6 complete` commit — xxh128 block sums capture-pinned (429/429 + 2048/2048 full-length via `ssh31-pull-redo`); delta replay + redo request bytes golden; live gate: 8-byte edit of 4 MiB re-pulls literal 2048 / matched 4,192,256, EXACTLY equal to real rsync `--stats`; zero-fill degrade on changed basis |
 | P7 | Push (sender role) | **DONE** | `P7 complete` commit — four full-stream c2s replay gates byte-identical (`ssh31-push-rt`/`-uptodate`/`-delta`/`-redo`); MatchSearcher token streams capture-exact incl. redo; live gates 4/4: tree SHA-identical server-side, re-push transfers nothing with real NTFS nsec mtimes, delta literal/matched EXACTLY equal to real rsync `--stats`, vanished source → exit 23 not hang; 3 adversarial findings fixed |
-| P8 | Daemon transport (`rsync://`) | **NEXT** | — |
-| P9 | Polish (`--delete`, `-z`, flag surface, exit codes) | pending | — |
+| P8 | Daemon transport (`rsync://`) | **DONE** | `P8 complete` commit — preamble byte-identical to captured client (greeting/auth/argv) across 10 daemon vectors; auth digest recipe computationally reproduced (md5, proto 31 and 29); post-OK stream `cmp`-identical to ssh minus version ints; 13 hermetic daemon replays + live gates 8/8 (anon+auth pull, module listing, push byte-identical, re-push transfers nothing, @ERROR/readonly exit codes); 4 adversarial findings fixed |
+| P9 | Polish (`--delete`, `-z`, flag surface, exit codes) | **NEXT** | — |
 
-Estimated effort remaining (active agent working hours, from P1–P7 measured pace):
-P8 ≈ 3–5 h, P9 ≈ 2–4 h.
+Estimated effort remaining (active agent working hours, from P1–P8 measured pace):
+P9 ≈ 2–4 h.
 
 ## The working method (follow this loop every phase)
 
@@ -125,14 +125,16 @@ delta stats sane on a modified file.
 ## P8 — Daemon transport (`rsync://`)
 
 Tasks:
-- [ ] `DaemonTcpTransport` — TCP 873. **No binary version ints on daemon sockets**: the
+- [x] `DaemonTcpTransport` — TCP 873. **No binary version ints on daemon sockets**: the
       greeting is textual `@RSYNCD: <ver>` both ways (see `wire-notes.md` gating rules), then
       module name, then `@RSYNCD: OK` / `AUTHREQD <challenge>`.
-- [ ] MD5 challenge-response auth; module listing.
-- [ ] After `OK` the session is the identical multiplex + protocol core.
+- [x] MD5 challenge-response auth; module listing.
+- [x] After `OK` the session is the identical multiplex + protocol core
+      (`HandshakeOptions.PreNegotiatedProtocolVersion` skips the version ints; daemon sessions
+      floor negotiation at protocol 30 — see `daemon-spec.md`).
 
 Verify: pull and push against a real `rsyncd` module in a container, anonymous and
-authenticated.
+authenticated. Done — see the status table evidence; full byte layout in `docs/daemon-spec.md`.
 
 ## P9 — Polish
 

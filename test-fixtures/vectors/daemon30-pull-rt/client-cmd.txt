@@ -1,0 +1,2 @@
+client: rsync --protocol=30 -rt --no-inc-recursive rsync://127.0.0.1:9000/tree/ /t/dpull30/
+exit=0

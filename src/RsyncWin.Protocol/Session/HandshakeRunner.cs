@@ -14,6 +14,15 @@ public sealed record HandshakeOptions
 
     /// <summary>Space-separated checksum-choice list. Must contain only implemented names.</summary>
     public string ChecksumOffer { get; init; } = ChecksumNegotiator.DefaultOffer;
+
+    /// <summary>
+    /// Set for a daemon (<c>rsync://</c>) session: the protocol version already agreed via the
+    /// textual <c>@RSYNCD: &lt;ver&gt;.&lt;sub&gt;</c> greeting. When set, the binary version-int
+    /// exchange is skipped entirely (<c>setup_protocol()</c> does the same once
+    /// <c>remote_protocol</c> is already known) and this value is used as the negotiated protocol.
+    /// Everything downstream — compat flags, checksum negotiation, the seed — is unchanged.
+    /// </summary>
+    public int? PreNegotiatedProtocolVersion { get; init; }
 }
 
 /// <summary>
@@ -33,6 +42,12 @@ public sealed record HandshakeOptions
 /// <item>checksum_seed LAST, a 4-byte LE int, at every protocol version.</item>
 /// </list>
 /// Reading the seed any earlier consumes the compat varint and desyncs every later read.
+///
+/// <para>
+/// Daemon sessions (<see cref="HandshakeOptions.PreNegotiatedProtocolVersion"/>) skip step 1
+/// entirely — the version was already agreed via the textual <c>@RSYNCD:</c> greeting — and join
+/// the sequence at step 2. Everything else, including gating on compat flags, is identical.
+/// </para>
 /// </remarks>
 public static class HandshakeRunner
 {
@@ -42,24 +57,38 @@ public static class HandshakeRunner
         HandshakeOptions options,
         CancellationToken cancellationToken = default)
     {
-        ArgumentOutOfRangeException.ThrowIfLessThan(options.AdvertisedProtocol, RsyncConstants.MinProtocolVersion);
-        ArgumentOutOfRangeException.ThrowIfGreaterThan(options.AdvertisedProtocol, RsyncConstants.ProtocolVersion);
         foreach (string name in options.ChecksumOffer.Split(' ', StringSplitOptions.RemoveEmptyEntries))
             ChecksumNegotiator.Map(name); // reject unimplemented names before they can win a negotiation
 
-        WriteInt32(output, options.AdvertisedProtocol);
-        await output.FlushAsync(cancellationToken);
-
-        int peerVersion = BinaryPrimitives.ReadInt32LittleEndian(await ReadExactAsync(input, 4, cancellationToken));
-        if (peerVersion < RsyncConstants.MinProtocolVersion || peerVersion > RsyncConstants.MaxProtocolVersion)
+        int protocol;
+        if (options.PreNegotiatedProtocolVersion is int preNegotiated)
         {
-            // Matches rsync's "is your shell clean?" failure mode: a version outside the sane range
-            // usually means a login script polluted the stream, not an actual old/new rsync.
-            throw new ProtocolException(
-                RsyncExitCode.ProtocolIncompatibility,
-                $"peer advertised protocol {peerVersion}, outside [{RsyncConstants.MinProtocolVersion}, {RsyncConstants.MaxProtocolVersion}] — protocol version mismatch, or the stream is polluted");
+            // Daemon mode: setup_protocol() skips the binary version-int exchange once
+            // remote_protocol is already known from the textual greeting. Nothing is written or
+            // read here; we join the sequence directly at compat_flags below.
+            ArgumentOutOfRangeException.ThrowIfLessThan(preNegotiated, RsyncConstants.MinProtocolVersion);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(preNegotiated, RsyncConstants.MaxProtocolVersion);
+            protocol = preNegotiated;
         }
-        int protocol = Math.Min(options.AdvertisedProtocol, peerVersion);
+        else
+        {
+            ArgumentOutOfRangeException.ThrowIfLessThan(options.AdvertisedProtocol, RsyncConstants.MinProtocolVersion);
+            ArgumentOutOfRangeException.ThrowIfGreaterThan(options.AdvertisedProtocol, RsyncConstants.ProtocolVersion);
+
+            WriteInt32(output, options.AdvertisedProtocol);
+            await output.FlushAsync(cancellationToken);
+
+            int peerVersion = BinaryPrimitives.ReadInt32LittleEndian(await ReadExactAsync(input, 4, cancellationToken));
+            if (peerVersion < RsyncConstants.MinProtocolVersion || peerVersion > RsyncConstants.MaxProtocolVersion)
+            {
+                // Matches rsync's "is your shell clean?" failure mode: a version outside the sane range
+                // usually means a login script polluted the stream, not an actual old/new rsync.
+                throw new ProtocolException(
+                    RsyncExitCode.ProtocolIncompatibility,
+                    $"peer advertised protocol {peerVersion}, outside [{RsyncConstants.MinProtocolVersion}, {RsyncConstants.MaxProtocolVersion}] — protocol version mismatch, or the stream is polluted");
+            }
+            protocol = Math.Min(options.AdvertisedProtocol, peerVersion);
+        }
 
         int compatFlags = 0;
         var checksum = ChecksumNegotiator.Default(protocol);

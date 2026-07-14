@@ -1,0 +1,2 @@
+@ERROR: Unknown module 'nonexistent'
+rsync error: error starting client-server protocol (code 5) at main.c(1865) [Receiver=3.4.3]

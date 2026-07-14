@@ -1,0 +1,3 @@
+@RSYNCD: 32.0 md5 md4
+@RSYNCD: AUTHREQD yas2f3mOS/0BTeTH1bR08A
+@ERROR: auth failed on module secret

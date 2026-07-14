@@ -269,8 +269,11 @@ sshcap "ssh31-push-nsec2" --protocol=31 -rt --no-inc-recursive /t/nsrc/ fake:/t/
 } > "$OUT/ssh31-push-nsec1/nsec-manifest.txt"
 
 # ---------------------------------------------------------------------------
-# 5. Daemon transport captures via socat tap.
+# 5. Daemon transport captures via socat tap (P8).
 # ---------------------------------------------------------------------------
+mkdir -p /t/dpush
+printf 'alice:opensesame\n' > /etc/rsyncd.secrets
+chmod 600 /etc/rsyncd.secrets
 cat > /etc/rsyncd.conf <<'EOF'
 port = 8730
 use chroot = no
@@ -280,16 +283,39 @@ use chroot = no
 [sizes]
     path = /t/sizes
     read only = yes
+[push]
+    path = /t/dpush
+    read only = no
+    uid = root
+    gid = root
+[secret]
+    path = /t/tree
+    read only = yes
+    auth users = alice
+    secrets file = /etc/rsyncd.secrets
 EOF
 rsync --daemon --config=/etc/rsyncd.conf --no-detach &
 DPID=$!
+
+# Second daemon with an motd file (motd text arrives before @RSYNCD: OK)
+printf 'Welcome to the rsyncwin capture daemon\nsecond motd line\n' > /etc/rsyncd.motd
+cat > /etc/rsyncd2.conf <<'EOF'
+port = 8731
+use chroot = no
+motd file = /etc/rsyncd.motd
+[tree]
+    path = /t/tree
+    read only = yes
+EOF
+rsync --daemon --config=/etc/rsyncd2.conf --no-detach &
+DPID2=$!
 sleep 1
 
-daemoncap() { # $1 = capture name; rest = client args
-  name=$1; shift
+daemoncap() { # $1 = capture name; $2 = daemon port; rest = client args
+  name=$1; port=$2; shift 2
   mkdir -p "$OUT/$name"
   socat -r "$OUT/$name/c2s.bin" -R "$OUT/$name/s2c.bin" \
-        TCP-LISTEN:9000,reuseaddr TCP:127.0.0.1:8730 &
+        TCP-LISTEN:9000,reuseaddr TCP:127.0.0.1:$port &
   SPID=$!
   sleep 0.3
   printf 'client: rsync %s\n' "$*" > "$OUT/$name/client-cmd.txt"
@@ -299,12 +325,50 @@ daemoncap() { # $1 = capture name; rest = client args
   wait $SPID 2>/dev/null || true
 }
 
-daemoncap "daemon31-list-tree"  --protocol=31 -r --no-inc-recursive --list-only rsync://127.0.0.1:9000/tree/
-daemoncap "daemon31-list-sizes" --protocol=31 -r --no-inc-recursive --list-only rsync://127.0.0.1:9000/sizes/
+daemoncap "daemon31-list-tree"  8730 --protocol=31 -r --no-inc-recursive --list-only rsync://127.0.0.1:9000/tree/
+daemoncap "daemon31-list-sizes" 8730 --protocol=31 -r --no-inc-recursive --list-only rsync://127.0.0.1:9000/sizes/
 rm -rf /t/dpull && mkdir -p /t/dpull
-daemoncap "daemon31-pull-rt"    --protocol=31 -rt --no-inc-recursive rsync://127.0.0.1:9000/tree/ /t/dpull/
+daemoncap "daemon31-pull-rt"    8730 --protocol=31 -rt --no-inc-recursive rsync://127.0.0.1:9000/tree/ /t/dpull/
 
-kill $DPID 2>/dev/null || true
+# Module listing (no module in URL). Also under motd to pin pre-OK text lines.
+daemoncap "daemon31-modlist"   8730 --protocol=31 rsync://127.0.0.1:9000/
+daemoncap "daemon31-motd-list" 8731 --protocol=31 rsync://127.0.0.1:9000/
+
+# Authenticated pull: server sends @RSYNCD: AUTHREQD <challenge>; client replies
+# "<user> <digest>". Challenge is random per run -- tests must recompute the
+# digest from the captured challenge + the password recorded in the manifest.
+rm -rf /t/dauth && mkdir -p /t/dauth
+RSYNC_PASSWORD=opensesame daemoncap "daemon31-auth-pull" 8730 --protocol=31 -rt --no-inc-recursive rsync://alice@127.0.0.1:9000/secret/ /t/dauth/
+printf 'user=alice\npassword=opensesame\n' > "$OUT/daemon31-auth-pull/auth-manifest.txt"
+
+# Auth failure: wrong password -> @ERROR line; record the client exit code
+RSYNC_PASSWORD=wrongpass daemoncap "daemon31-auth-fail" 8730 --protocol=31 -rt --no-inc-recursive rsync://alice@127.0.0.1:9000/secret/ /t/dauth/
+printf 'user=alice\npassword=wrongpass\n' > "$OUT/daemon31-auth-fail/auth-manifest.txt"
+
+# Digest-selection contrast: protocol 29 client sends no digest list in its greeting
+rm -rf /t/dauth29 && mkdir -p /t/dauth29
+RSYNC_PASSWORD=opensesame daemoncap "daemon29-auth-pull" 8730 --protocol=29 -rt rsync://alice@127.0.0.1:9000/secret/ /t/dauth29/
+printf 'user=alice\npassword=opensesame\n' > "$OUT/daemon29-auth-pull/auth-manifest.txt"
+
+# Unknown module -> @ERROR path
+rm -rf /t/dx && mkdir -p /t/dx
+daemoncap "daemon31-badmodule" 8730 --protocol=31 -rt --no-inc-recursive rsync://127.0.0.1:9000/nonexistent/ /t/dx/
+
+# Push into a read-only module -> @ERROR path
+daemoncap "daemon31-push-readonly" 8730 --protocol=31 -rt --no-inc-recursive /t/tree/ rsync://127.0.0.1:9000/tree/
+
+# Protocol 30 greeting/gating reference
+rm -rf /t/dpull30 && mkdir -p /t/dpull30
+daemoncap "daemon30-pull-rt" 8730 --protocol=30 -rt --no-inc-recursive rsync://127.0.0.1:9000/tree/ /t/dpull30/
+
+# Push into a writable daemon module, then re-push (server quick-check)
+daemoncap "daemon31-push-rt"       8730 --protocol=31 -rt --no-inc-recursive /t/tree/ rsync://127.0.0.1:9000/push/
+daemoncap "daemon31-push-uptodate" 8730 --protocol=31 -rt --no-inc-recursive /t/tree/ rsync://127.0.0.1:9000/push/
+
+# Server-side hashes of the pushed tree (push gate reference)
+( cd /t/dpush && find . -type f -print0 | sort -z | xargs -0 -r sha256sum ) > "$OUT/daemon31-push-rt/server-tree.sha256"
+
+kill $DPID $DPID2 2>/dev/null || true
 
 # ---------------------------------------------------------------------------
 # 6. MD4 sanity vectors via openssl legacy provider (best-effort).
