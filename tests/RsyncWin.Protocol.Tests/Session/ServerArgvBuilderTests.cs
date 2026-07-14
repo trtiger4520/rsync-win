@@ -25,6 +25,12 @@ public class ServerArgvBuilderTests
         { "ssh31-pull-delta", new() { Sender = true, Paths = ["/t/tree/b003_300k.bin"] } },
         { "ssh31-sizes-list", new() { Sender = true, Recurse = true, ListOnly = true, Paths = ["/t/sizes/"] } },
         { "ssh31-push-rt", new() { Sender = false, Recurse = true, Paths = ["/t/pushdst/"] } },
+        { "ssh31-push-nsec1", new() { Sender = false, Recurse = true, Paths = ["/t/nsdst/"] } },
+        { "ssh31-push-delta", new() { Sender = false, Paths = ["/t/pushdelta/"] } },
+        // ssh31-push-redo is deliberately NOT a golden here: its capture used --bwlimit=200 (a
+        // capture-time throttle to stretch the transfer for the redo window, see capture.sh) which
+        // is outside the option set ServerArgvBuilder supports — otherwise it is the same "-t"
+        // shape as push-delta.
     };
 
     [Theory]

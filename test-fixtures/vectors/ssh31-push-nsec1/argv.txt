@@ -1,0 +1,5 @@
+rsync
+--server
+-tre.LsfxCIvu
+.
+/t/nsdst/

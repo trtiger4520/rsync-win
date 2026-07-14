@@ -1,0 +1,6 @@
+rsync
+--server
+-te.LsfxCIvu
+--bwlimit=200
+.
+/t/pushredo-dst/

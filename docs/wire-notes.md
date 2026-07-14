@@ -265,6 +265,59 @@ rsync ≥ 3.2.7) exists beyond the classic 8 flags. Assert `CF_INC_RECURSE` clea
 - **ssh child process:** use `BaseStream` only; pump stdin/stdout/stderr on three concurrent loops or
   a large stderr burst deadlocks both sides.
 
+## Push direction (sender role) — MEASURED, `ssh31-push-rt` decode (P7)
+
+All verified byte-for-byte against `test-fixtures/vectors/ssh31-push-rt/` (rsync 3.4.3 client-sender,
+protocol 31, `-tr --no-inc-recursive`, both streams fully accounted for):
+
+- **Handshake is identical to pull** (version → compat varint → strings → seed last; both directions
+  multiplexed from the first post-prologue byte). Roles swap only after the handshake.
+- **A push client sends NO filter list** — not even the terminating int32 0 that a pull client sends.
+  The first c2s frame payload begins directly with the flist. (Filters presumably appear under
+  `--delete`; discriminate by capture before implementing P9 delete.)
+- **flist encode** follows the reader layout in reverse (`flist-spec.md`), with real rsync choosing
+  `SAME_MODE`/`SAME_TIME`/`SAME_NAME` l1-prefix runs and the extended 2-byte xflags varint form
+  (`80 xx`) as observed. Entries go out in **readdir order, not sorted order** — both ends sort
+  after receipt, and the ndx space is over the *sorted* list. End of list: `0x00`, then
+  `varint(0) + varint(io_error)` tail (no id0 tail without `-o`/`-g`).
+- **Server-generator requests** mirror what our pull generator writes: `read_ndx` + iflags LE16; a
+  sum head (+ block sums) follows **only** when `ITEM_TRANSFER` (0x8000) is set. Fresh-push files
+  carry an **all-zero null head** (count=blength=s2length=remainder=0) — not the (0,700,2,0) shape an
+  empty basis signature produces. Directories: `0x6000`, root `.`: `0x0008`, no head.
+- **Sender reply per file**: `write_ndx` (own outbound state) + iflags LE16 **verbatim echo**; if
+  ITEM_TRANSFER, the 16-byte sum head is **echoed verbatim** too, then the token stream — literals as
+  plain LE int32 length + bytes, chunked at exactly **32768**; end token `00 00 00 00`; then the
+  whole-file trailer (16 bytes for xxh128). Attribute-only replies stop after the iflags echo. An
+  empty file still gets END token + trailer (= hash of empty input, seed 0 — the
+  whole-file-sum-ignores-seed rule re-verified push-side).
+- **No stats block in either direction on a push.** Pull's 5-varlong s2c stats leg does not exist —
+  the client-sender already holds the totals. DONE choreography mirrors pull with roles swapped:
+  server-generator DONE#1 → (empty redo) → #2#3#4 burst → goodbye #5; client-sender echoes
+  #1, #2, final #3, goodbye #4, and the stream ends exactly there.
+- No keep-alives or non-`MSG_DATA` tags appear in a clean small push.
+
+Further pins from the P7 decisive captures (`ssh31-push-uptodate` / `-delta` / `-redo` /
+`-nsec1`+`-nsec2`, all bytes accounted for):
+
+- **Fast path is symmetric**: re-pushing an identical tree produces **zero** server-generator
+  requests — s2c is handshake + five `NDX_DONE`s, c2s after the flist is just four. The sender sends
+  nothing per-file when nothing is requested.
+- **Token stream shape is identical to the pull direction** (`ssh31-push-delta`, basis patched at
+  1000/150000): REF 0; LIT 700; REF 2..213; LIT 700; REF 215..428 (last = remainder 400); END —
+  matches greedily, jumps a full block per match, literals block-aligned here. The MatchSearcher
+  gate is symmetric with pull's FileReceiver.
+- **Sender-side redo** (`ssh31-push-redo`): the phase-1 re-request arrives between s2c DONE#1/#2
+  with the **same iflags**, head `(count, blength, 16, remainder)` — only s2length grows to the full
+  16 — and sums **recomputed from the current on-disk basis** (the discarded temp is not consulted).
+  The sender replies with a complete fresh match against the new sums. **ndx codec state persists
+  across phases in both directions** (ndx 0 re-encodes `FE 00 00` on both sides — third independent
+  confirmation of the P6 pull pin).
+- **`XMIT_MOD_NSEC` = 0x2018-style extended xflags** (`ssh31-push-nsec1`): for a nonzero
+  `tv_nsec` the sender sets xflag 0x2000 and emits `varint(nsec)` **between the mtime varlong and
+  the mode**. The server (with `-t`) stores the nanoseconds and the re-push quick-check passes —
+  re-push transfers nothing even for fractional mtimes, so NTFS 100 ns ticks are safe as long as we
+  emit the same truncated value every run.
+
 ## Open questions (resolve by live capture, in the phase that needs them)
 
 - ~~Exact `write_varint`/`write_varlong` byte math~~ — resolved (P1, `codec-spec.md` §2–§3)
@@ -300,3 +353,17 @@ rsync ≥ 3.2.7) exists beyond the classic 8 flags. Assert `CF_INC_RECURSE` clea
   negotiation)
 - `SignatureGenerator` buffers the whole signature (`count * entry` bytes) in one array — fine at
   today's basis sizes, but stream it before targeting multi-TB basis files
+- The push sender reads the whole source file into memory (`PushSession` + `MatchSearcher`'s span
+  API); sources ≥ 2 GiB are rejected with an explicit failure rather than streamed — stream/map the
+  source before advertising large-file push support (P7 deferral, mirrors the SignatureGenerator
+  note above)
+- `MatchSearcher`'s shrinking-tail weak-sum recompute is O(blength²) worst case (~8.6e9 byte-ops at
+  the 131072 block-size cap) — replace with an incremental roll-out before pushing multi-GB files
+  with huge blocks (P7 deferral, correctness unaffected)
+- `XMIT_MOD_NSEC` *write* placement is pinned transitively (round-trip through the capture-pinned
+  reader + the live re-push-transfers-nothing gate with real NTFS nsec mtimes); the `ssh31-push-nsec1`
+  c2s flist is not itself byte-replayed — add it to the FileListWriter goldens if the nsec path ever
+  regresses
+- Windows drive-letter paths (`D:\backup`) parse as remote specs on either CLI side (the first-':'
+  rule) — pull inherited this from P5, push fails loudly via ssh resolving host "D"; disambiguate in
+  P9's flag-surface pass

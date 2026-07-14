@@ -22,7 +22,8 @@ OUT=/work/vectors
 rm -rf "$OUT"
 mkdir -p "$OUT"
 
-apk add --no-cache rsync openssl socat >/dev/null 2>&1
+# coreutils: GNU touch/stat for the nanosecond-mtime scenarios (busybox truncates fractions)
+apk add --no-cache rsync openssl socat coreutils >/dev/null 2>&1
 
 {
   echo "generated: (see git log; timestamps deliberately not embedded)"
@@ -216,6 +217,56 @@ cp /t/redodst/big.bin "$OUT/ssh31-pull-redo/result.bin"
 # Push (sender-side capture; P7 reference, free to record now)
 rm -rf /t/pushdst && mkdir -p /t/pushdst
 sshcap "ssh31-push-rt" --protocol=31 -rt --no-inc-recursive /t/tree/ fake:/t/pushdst/
+
+# P7 push experiments. E1: re-push an identical tree — proves the server-side
+# mtime+size fast path (zero generator requests; s2c is handshake + 5 DONEs).
+rm -rf /t/pushdst && mkdir -p /t/pushdst
+cp -a /t/tree/. /t/pushdst/
+sshcap "ssh31-push-uptodate" --protocol=31 -rt --no-inc-recursive /t/tree/ fake:/t/pushdst/
+
+# E2: push with a stale server basis (same offsets as ssh31-pull-delta). Pins
+# the s2c sum head + block sums arriving at the sender AND the sender's exact
+# token stream (match greediness, literal chunking, remainder block, trailer)
+# — the MatchSearcher byte gate.
+rm -rf /t/pushdelta && mkdir -p /t/pushdelta
+cp /t/tree/b003_300k.bin /t/pushdelta/b003_300k.bin
+printf 'XXXXXXXX' | dd of=/t/pushdelta/b003_300k.bin bs=1 seek=1000 conv=notrunc 2>/dev/null
+printf 'YYYY'     | dd of=/t/pushdelta/b003_300k.bin bs=1 seek=150000 conv=notrunc 2>/dev/null
+touch -d '2019-01-01 00:00:00' /t/pushdelta/b003_300k.bin
+sshcap "ssh31-push-delta" --protocol=31 -t --no-whole-file /t/tree/b003_300k.bin fake:/t/pushdelta/
+cp /t/pushdelta/b003_300k.bin "$OUT/ssh31-push-delta/result.bin"
+
+# E3: induced-mismatch redo, push direction (pull-redo trick with roles
+# swapped: the basis lives on the SERVER; corrupt it mid-transfer so the
+# server receiver's reconstruction fails the whole-file sum and the server
+# generator re-requests in phase 1). Pins the sender-side redo: full-length
+# re-request between DONE#1/#2, sums recomputed from the current on-disk
+# basis, ndx codec state persisting across phases in both directions.
+mkdir -p /t/pushredo-src /t/pushredo-dst
+detbytes 4194304 redo4m > /t/pushredo-src/big.bin
+touch -d '2023-05-05 05:05:05' /t/pushredo-src/big.bin
+cp /t/pushredo-src/big.bin /t/pushredo-dst/big.bin
+detbytes 262144 redobasis | dd of=/t/pushredo-dst/big.bin bs=1024 count=256 conv=notrunc 2>/dev/null
+touch -d '2019-01-01 00:00:00' /t/pushredo-dst/big.bin
+( sleep 1; printf 'ZZZZ' | dd of=/t/pushredo-dst/big.bin bs=1 seek=4100000 conv=notrunc 2>/dev/null ) &
+CORRUPTER=$!
+sshcap "ssh31-push-redo" --protocol=31 -t --no-whole-file --bwlimit=200 /t/pushredo-src/big.bin fake:/t/pushredo-dst/
+wait $CORRUPTER 2>/dev/null || true
+cp /t/pushredo-dst/big.bin "$OUT/ssh31-push-redo/result.bin"
+
+# E4: fractional source mtime — proves the sender emits XMIT_MOD_NSEC (xflag
+# 0x2000, varint nsec between mtime and mode) and that the re-push quick-check
+# still passes with nanosecond mtimes (nsec2 transfers nothing). Requires GNU
+# touch/stat (coreutils) for sub-second -d.
+rm -rf /t/nsrc /t/nsdst && mkdir -p /t/nsrc /t/nsdst
+printf 'nsec probe\n' > /t/nsrc/frac.txt
+touch -d '2024-03-03 03:03:03.123456789' /t/nsrc/frac.txt
+sshcap "ssh31-push-nsec1" --protocol=31 -rt --no-inc-recursive /t/nsrc/ fake:/t/nsdst/
+sshcap "ssh31-push-nsec2" --protocol=31 -rt --no-inc-recursive /t/nsrc/ fake:/t/nsdst/
+{
+  echo "# path size mtime-sec mtime-full (GNU stat)"
+  stat -c '%n %s %Y %y' /t/nsrc/frac.txt /t/nsdst/frac.txt
+} > "$OUT/ssh31-push-nsec1/nsec-manifest.txt"
 
 # ---------------------------------------------------------------------------
 # 5. Daemon transport captures via socat tap.

@@ -1,0 +1,5 @@
+rsync
+--server
+-te.LsfxCIvu
+.
+/t/pushdelta/

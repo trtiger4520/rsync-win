@@ -1,0 +1,3 @@
+# path size mtime-sec mtime-full (GNU stat)
+/t/nsrc/frac.txt 11 1709434983 2024-03-03 03:03:03.123456789 +0000
+/t/nsdst/frac.txt 11 1709434983 2024-03-03 03:03:03.123456789 +0000

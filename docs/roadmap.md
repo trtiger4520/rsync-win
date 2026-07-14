@@ -21,12 +21,12 @@
 | P4 | Pull transfer (THE interop milestone) | **DONE** | `4683481` — whole tree over ssh.exe SHA-256-identical, remote exit 0; adversarial review findings fixed |
 | P5 | Recursive pull polish (fast path, sanitization, Channels) | **DONE** | `P5 complete` commit — fast path pinned byte-exact by `ssh31-pull-uptodate`/`-partial` vectors; live gates 7/7 incl. re-run-transfers-nothing + hostile-name sanitization; CLI wired; 4 adversarial findings fixed |
 | P6 | Delta efficiency (basis matching) | **DONE** | `P6 complete` commit — xxh128 block sums capture-pinned (429/429 + 2048/2048 full-length via `ssh31-pull-redo`); delta replay + redo request bytes golden; live gate: 8-byte edit of 4 MiB re-pulls literal 2048 / matched 4,192,256, EXACTLY equal to real rsync `--stats`; zero-fill degrade on changed basis |
-| P7 | Push (sender role) | **NEXT** | — |
-| P8 | Daemon transport (`rsync://`) | pending | — |
+| P7 | Push (sender role) | **DONE** | `P7 complete` commit — four full-stream c2s replay gates byte-identical (`ssh31-push-rt`/`-uptodate`/`-delta`/`-redo`); MatchSearcher token streams capture-exact incl. redo; live gates 4/4: tree SHA-identical server-side, re-push transfers nothing with real NTFS nsec mtimes, delta literal/matched EXACTLY equal to real rsync `--stats`, vanished source → exit 23 not hang; 3 adversarial findings fixed |
+| P8 | Daemon transport (`rsync://`) | **NEXT** | — |
 | P9 | Polish (`--delete`, `-z`, flag surface, exit codes) | pending | — |
 
-Estimated effort remaining (active agent working hours, from P1–P6 measured pace):
-P7 ≈ 4–7 h, P8 ≈ 3–5 h, P9 ≈ 2–4 h.
+Estimated effort remaining (active agent working hours, from P1–P7 measured pace):
+P8 ≈ 3–5 h, P9 ≈ 2–4 h.
 
 ## The working method (follow this loop every phase)
 
@@ -111,12 +111,13 @@ size and matched ≈ file size, cross-checked against real rsync's `--stats` for
 Goal: push a tree to a real rsync server. Reuses the pure core; the new work is the sender loop.
 
 Tasks:
-- [ ] `FileEnumerator` (source walk) + flist **encode** (the reader's layout in reverse,
+- [x] `FileEnumerator` (source walk) + flist **encode** (the reader's layout in reverse,
       `flist-spec.md`) + ordinal sort.
-- [ ] Read the server-generator's requests (ndx + iflags + sum head), run `MatchSearcher`
+- [x] Read the server-generator's requests (ndx + iflags + sum head), run `MatchSearcher`
       (rolling-search equivalent of `match.c`), emit token stream + whole-file trailer.
-- [ ] Handle the server's redo phase (re-send on its mismatch report).
-- [ ] Capture c2s-sender fixtures (new direction) for hermetic replay.
+- [x] Handle the server's redo phase (re-send on its mismatch report).
+- [x] Capture c2s-sender fixtures (new direction) for hermetic replay
+      (`ssh31-push-uptodate`/`-delta`/`-redo`/`-nsec1`+`-nsec2`, recipes merged into capture.sh).
 
 Verify: push a tree; inside the container `diff -r` is empty and re-push transfers nothing;
 delta stats sane on a modified file.

@@ -1,0 +1,2 @@
+client: rsync --protocol=31 -t --no-whole-file /t/tree/b003_300k.bin fake:/t/pushdelta/
+exit=0

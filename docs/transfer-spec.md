@@ -174,3 +174,28 @@ client, and the reconstructed 300000-byte file SHA-256-matches the full-transfer
 re-encode of the same ndx as `FE 00 00` between DONE#1 and the DONE#2/#3/#4 burst — exercised
 hermetically (no capture-fidelity concern; the shape is fully spec'd) in
 `PullSessionRedoTests.InducedMismatch_RedoesWithPersistentNdxState_AndFullLengthSignature`.
+
+## P7 additions: the push (sender) direction (capture-pinned)
+
+Decoded byte-exact from `ssh31-push-rt` / `-uptodate` / `-delta` / `-redo` / `-nsec1`+`-nsec2`:
+
+- **No filter list on a push** — the first c2s frame payload begins directly with the flist (not
+  even pull's terminating int32 0). Expect filters to appear under `--delete`; recapture then.
+- **No stats block in either direction** — pull's 5-varlong s2c stats leg does not exist on a push;
+  nothing replaces it. DONE maps mirror pull with roles swapped: s2c (server generator) = #1 after
+  requests, #2#3#4 burst, goodbye #5; c2s (client sender) = echo#1, echo#2+final#3, goodbye #4, and
+  the stream ends exactly there.
+- **Sender reply layout** (§1 confirmed for our own sender): `write_ndx` + iflags LE16 echoed
+  verbatim; if `ITEM_TRANSFER`, the 16-byte sum head is echoed verbatim, then tokens (§2, literals
+  chunked at 32768), END, trailer (§3). Attribute-only replies stop after the iflags echo. Empty
+  file: END + trailer of the empty input.
+- **Fresh-push requests carry an all-zero null head** (count=blength=s2length=remainder=0), NOT the
+  `(0,700,2,0)` shape an empty-basis signature produces. Null head → the whole source goes out as
+  literals.
+- **Sender-side redo**: phase-1 re-request between DONE#1/#2 keeps iflags and count/blength/
+  remainder, grows s2length to the full 16, sums recomputed from the current on-disk basis; the
+  sender answers with a complete fresh match. ndx codec state persists across phases in both
+  directions (`FE 00 00` re-encode, third independent confirmation).
+- **`XMIT_MOD_NSEC` (xflag 0x2000)**: nonzero `tv_nsec` emits `varint(nsec)` between the mtime
+  varlong and the mode; the server stores it and the re-push quick-check passes (re-push transfers
+  nothing even with fractional mtimes).

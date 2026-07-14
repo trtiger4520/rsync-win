@@ -1,0 +1,2 @@
+client: rsync --protocol=31 -t --no-whole-file --bwlimit=200 /t/pushredo-src/big.bin fake:/t/pushredo-dst/
+exit=0

@@ -1,0 +1,2 @@
+client: rsync --protocol=31 -rt --no-inc-recursive /t/nsrc/ fake:/t/nsdst/
+exit=0
