@@ -223,13 +223,41 @@ public class CommandLineParserTests
         Assert.True(command.Delete);
     }
 
-    [Fact]
-    public void Parse_LocalToLocal_IsRejected()
+    [Theory]
+    [InlineData(@"D:\a", @"D:\b")]
+    [InlineData("D:/a", "D:/b")]
+    [InlineData(@"D:\a\", @"D:\b")] // trailing separator survives into Source verbatim
+    [InlineData(@"\\server\share\a", @"D:\b")] // UNC counts as local
+    [InlineData("relative-src", "relative-dst")] // no drive letter at all is local too
+    public void Parse_LocalToLocal_ClassifiesAsLocalCopy(string source, string dest)
     {
-        (ParsedCommand? command, ParseFailure? failure) = CommandLineParser.Parse(["-r", @"D:\a", @"D:\b"]);
+        (ParsedCommand? command, ParseFailure? failure) = CommandLineParser.Parse(["-r", source, dest]);
+
+        Assert.Null(failure);
+        Assert.Equal(ParsedAction.LocalCopy, command!.Action);
+        Assert.Equal(source, command.Source);
+        Assert.Equal(dest, command.Dest);
+        Assert.Null(command.Endpoint);
+    }
+
+    [Fact]
+    public void Parse_LocalToLocalDeleteWithoutRecurse_IsStillRejected()
+    {
+        (ParsedCommand? command, ParseFailure? failure) = CommandLineParser.Parse(["--delete", @"D:\a", @"D:\b"]);
 
         Assert.Null(command);
         Assert.NotNull(failure);
+        Assert.Contains("--delete", failure!.Message);
+    }
+
+    [Fact]
+    public void Parse_LocalToLocalWithCompressAndSecluded_IsAcceptedAsNoOp()
+    {
+        // -z/-s mean nothing without a wire; they parse fine and the local path just never reads them.
+        (ParsedCommand? command, ParseFailure? failure) = CommandLineParser.Parse(["-rzs", @"D:\a", @"D:\b"]);
+
+        Assert.Null(failure);
+        Assert.Equal(ParsedAction.LocalCopy, command!.Action);
     }
 
     [Fact]

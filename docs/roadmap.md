@@ -26,11 +26,12 @@
 | P9 | Polish (`--checksum`, `--delete` pull, flag surface, exit codes) | **DONE** | `P9 complete` commit — `--checksum` flist F_SUM capture-pinned (`ssh31-pull-checksum`: 16B xxh128, unseeded, regular-files-only, last field) + generator decision 0x0008/0x8002/0xA002 (hermetic byte-exact c2s replay + decision unit tests + live attribute-only/content-change gates); `--delete` pull is **local-only** (`ssh31-pull-delete`: zero wire del-stats either direction) via `LocalTreePruner` (reparse-point-safe, io_error-suppressed incl. mid-session `MSG_IO_ERROR`); drive-letter/UNC disambiguation, `-c`/`--delete`/long-form/unknown-flag handling, exit-code completeness 0/2/3/4/5/10/11/12/23/24/30 + ssh-255-before-12 ordering fix (`ExitCodeMapper`, one test per code); 394 hermetic + 23 live interop green; adversarial review found no code bugs, 2 test-strength gaps closed |
 | P10 | Compression (`-z`) + `--secluded-args` + push `--checksum`/`--delete` | **DONE** | `P10 complete` commit — `--secluded-args` pre-version NUL arg-list byte-exact (`ssh31-secluded-*`); push `--checksum` F_SUM emission (write→read round-trip + live re-push-nothing) and push `--delete` via MSG_DELETED tag 0x6c (empty filter list added), both live-gated; PushSession consumes the protocol-31 `NDX_DEL_STATS` block emitted by newer peers; **`-z` zlibx** codec (forced `--new-compress`, no zstd/zlib) — decoder capture-pinned byte-exact against `ssh31-pull-z-{zlibx,delta}`, encoder↔decoder round-trip, both directions live byte-identical + re-transfers-nothing; 402 hermetic + interop green; adversarial review clean |
 | P11 | Application integrity, performance, and Linux image evaluation | **BLOCKED** | Correctness gates pass (426 hermetic, 6 process-level application, existing live interop, Linux image smoke, full deterministic datasets); after two perf repair cycles the fair Linux runner still fails before client start on Windows bind-mount parsing, and Windows smoke still lacks peak RSS and literal/matched evidence |
+| P12 | Local-to-local direct copy | **DONE** | `LocalSyncEngine` direct-copy engine (no wire, no transport) with real-rsync trailing-slash semantics, size+100ns-mtime skip fast path, `-c` streamed byte compare with attribute-only update, `--delete` via `LocalTreePruner`, replace hazards (read-only/locked/file↔dir) per-file not fatal, self-copy guards; 496 hermetic green incl. new `LocalSyncEngineTests`; live interop Smoke 10/10 (PullSession finalize extraction regression-checked); adversarial review: 2 confirmed findings fixed; no interop cases (zero wire bytes by design) |
 
 **Core feature development complete.** P0–P10 are DONE; P11 evaluates the completed surface rather
 than adding rsync wire features. The client does pull and push over ssh.exe and the rsync
 daemon, with delta transfers, `--checksum`, `--delete`, `--secluded-args`, and `-z` (zlibx)
-compression. The live interop matrix verifies stock rsync 3.4.3 and 3.4.4 peers through Smoke,
+compression, plus local-to-local direct copy (P12, no wire). The live interop matrix verifies stock rsync 3.4.3 and 3.4.4 peers through Smoke,
 Full, and protocol-29 Guard profiles. Scoped-out-by-design items (each with a written rationale):
 protocol 27/29 flist decode, `zstd`/`lz4`/old-`zlib` compression (BCL has only deflate), `-a` extras
 on push (uid/gid/links/devices), streaming for &gt;2 GiB files, and issuing
@@ -249,6 +250,55 @@ Current blocker evidence is recorded in `docs/integrity-evaluation.md`. Do not m
 fair/practical-track, or final-report checkboxes complete until the fair runner starts both clients,
 five manifest-verified full iterations exist per cell, and Windows RSS/literal/matched fields are
 observed rather than zero/null.
+
+## P12 — Local-to-local direct copy
+
+Goal: `rsyncwin [flags] C:\src C:\dst` with both sides local, matching real rsync's user-visible
+semantics without the wire protocol.
+
+Design (decided up front, recorded here so a later session does not re-litigate):
+- **Direct copy, not a loopback wire session.** Real rsync forks a local server over a socketpair
+  but defaults to `--whole-file` there, so a direct copy with rsync's skip/replace semantics is
+  behaviorally equivalent — and this codebase has no server-side handshake/generator to loop back to.
+  Engine lives in `RsyncWin.Fs` (`LocalSyncEngine`), reusing `FileEnumerator`, `LocalPathPolicy`,
+  `DestinationReplacer` (finalize helpers extracted from `PullSession`), and `LocalTreePruner`.
+- **Trailing-slash semantics are real rsync's** (`src` creates `dest\src\...`; `src\` copies
+  contents), intentionally diverging from the ssh/daemon push TODO(P9) always-contents convention —
+  new surface starts out correct; align push later.
+- Flags: `-r`/`-a` (as recursion), `-t` (no-op as everywhere), `-c` (streamed byte compare +
+  attribute-only mtime update), `--delete` (source-read errors suppress deletion); `-z`/`-s` parse
+  and are ignored (meaningless without a wire, same as real rsync locally).
+- Skip fast path is size + exact `LastWriteTimeUtc` (full 100ns precision — no wire truncation).
+- Exit codes: per-file failures → 23; source/dest-root failures → 11; shape errors (self-copy,
+  dest-inside-source, contents-into-a-file) → 1. Never 12 — there is no protocol stream.
+
+Contract:
+- [x] Trailing-slash both forms (`\` and `/`), missing-dest creation, single-file source
+- [x] Re-run transfers nothing; file and directory mtimes preserved (deepest-first restore)
+- [x] `-c` three states (skip / attribute-only / recopy) and fast-path limitation documented by test
+- [x] Non-recursive directory source skipped (`skipping directory`), file source works without `-r`
+- [x] Replace hazards: read-only replaced; locked dest and non-empty-dir-conflict are per-file
+      failures; empty dir / file / reparse point in the way replaced without following links
+- [x] `--delete` prune with `LocalTreePruner`, suppressed on source read errors
+- [x] Self-copy and dest-inside-source rejected; long paths (>260 chars) copy
+- [x] No interop cases: a local copy exchanges zero wire bytes, and a Linux container cannot
+      exercise NTFS local semantics — hermetic `LocalSyncEngineTests` are the gate
+- [x] Adversarial review (protocol-reviewer): 2 confirmed findings fixed — a junction/mount-point
+      **destination root** was unlinked instead of written through (now `EnsureDestinationRoot`:
+      the user-named root is never deleted; nested reparse points remain replaceable transfer
+      entries), and the `SourceReadError → PruneSkipped` suppression path had zero test coverage
+      (now pinned by `LockedSourceFile_SuppressesDelete`). Prune failures now surface as a failed
+      item (exit 23) instead of aborting with exit 11.
+
+Known limitations (accepted, by design):
+- The self-copy guard is lexical (`Path.GetFullPath`): an 8.3 short-name alias or a junction
+  pointing back inside the source evades it. Bounded consequence — enumeration snapshots up
+  front, so worst case is one nested self-copy, never unbounded recursion or deletion. A real fix
+  needs file-identity comparison via `GetFinalPathNameByHandle` P/Invoke.
+- The skip fast path compares exact 100ns mtimes; on FAT32/exFAT destinations (2s/10ms timestamp
+  granularity) "re-run transfers nothing" only holds on NTFS. No `--modify-window`.
+- The wire pull's `--delete` shares the unwrapped-pruner abort behavior this phase fixed locally
+  (PullSession.cs `LocalTreePruner.Prune` call) — align it when next touching that path.
 
 ## Standing constraints (do not relax)
 

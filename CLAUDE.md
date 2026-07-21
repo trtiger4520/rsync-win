@@ -7,7 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A Windows rsync **client** in C# targeting .NET 10. It implements the rsync wire protocol so Windows
 machines can sync with real rsync servers without WSL or Cygwin.
 
-Scope: **pull and push**; transport over **ssh.exe** and the **rsync daemon** (`rsync://`); CLI only.
+Scope: **pull and push** over **ssh.exe** and the **rsync daemon** (`rsync://`), plus
+**local-to-local direct copy** (no wire — `LocalSyncEngine` in `RsyncWin.Fs`); CLI only.
 
 **Start here every session:** `docs/roadmap.md` is the living plan — phase status with commit
 evidence, what to do next, and the mandatory per-phase working method (spec → capture → validate →

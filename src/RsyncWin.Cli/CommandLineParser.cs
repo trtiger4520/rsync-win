@@ -10,6 +10,7 @@ internal enum ParsedAction
     DaemonPull,
     DaemonPush,
     DaemonList,
+    LocalCopy,
     ShowHelp,
 }
 
@@ -24,7 +25,7 @@ internal sealed record DaemonEndpoint(string? User, string Host, int Port, strin
 /// already self-explanatory).</summary>
 internal sealed record ParseFailure(string Message, bool ShowUsage = false);
 
-/// <summary>A fully classified, ready-to-dispatch command line — flags plus which of the five
+/// <summary>A fully classified, ready-to-dispatch command line — flags plus which of the
 /// invocation shapes it resolves to. <see cref="Source"/>/<see cref="Dest"/> carry the raw local or
 /// "[user@]host:path" spec for whichever side is relevant to <see cref="Action"/>; <see cref="Endpoint"/>
 /// carries the parsed daemon endpoint for the daemon actions.</summary>
@@ -208,11 +209,11 @@ internal static class CommandLineParser
         if (destIsRemote && !sourceIsRemote)
             return (new ParsedCommand(ParsedAction.SshPush, recurse, archive, checksum, delete, secluded, compress, rshOverride, source, dest, null), null);
 
-        return (null, new ParseFailure(
-            sourceIsRemote
-                ? "rsyncwin: remote-to-remote transfers are not supported"
-                : "rsyncwin: one side must be a remote path (\"[user@]host:path\") — local-to-local transfers are not supported",
-            ShowUsage: true));
+        if (sourceIsRemote)
+            return (null, new ParseFailure("rsyncwin: remote-to-remote transfers are not supported", ShowUsage: true));
+
+        // Neither side is remote: local-to-local direct copy (no wire, no transport).
+        return (new ParsedCommand(ParsedAction.LocalCopy, recurse, archive, checksum, delete, secluded, compress, rshOverride, source, dest, null), null);
     }
 
     /// <summary>

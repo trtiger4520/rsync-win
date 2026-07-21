@@ -34,6 +34,7 @@ static async Task<int> RunAsync(string[] args)
         ParsedAction.SshPush => await RunPushAsync(cmd.Source!, cmd.Dest!, cmd.Recurse, cmd.Archive, cmd.Checksum, cmd.Delete, cmd.Secluded, cmd.Compress, cmd.RshOverride),
         ParsedAction.DaemonPull => await RunDaemonPullAsync(cmd.Endpoint!, cmd.Dest!, cmd.Recurse, cmd.Archive, cmd.Checksum, cmd.Delete, cmd.Compress),
         ParsedAction.DaemonPush => await RunDaemonPushAsync(cmd.Source!, cmd.Endpoint!, cmd.Recurse, cmd.Archive, cmd.Checksum, cmd.Delete, cmd.Compress),
+        ParsedAction.LocalCopy => RunLocal(cmd.Source!, cmd.Dest!, cmd.Recurse || cmd.Archive, cmd.Checksum, cmd.Delete),
         _ => throw new InvalidOperationException($"unhandled parsed action {cmd.Action}"),
     };
 }
@@ -57,6 +58,7 @@ static void PrintHelp(TextWriter writer)
     writer.WriteLine("  rsyncwin [OPTIONS] rsync://[user@]host[:port]/module[/path] localdir    daemon pull");
     writer.WriteLine("  rsyncwin [OPTIONS] localdir rsync://[user@]host[:port]/module[/path]    daemon push (-a not yet)");
     writer.WriteLine("  rsyncwin rsync://[user@]host[:port]/                                    list daemon modules");
+    writer.WriteLine("  rsyncwin [OPTIONS] localsrc localdir                                    local copy (\"src\\\" copies contents; \"src\" creates dir)");
     writer.WriteLine();
     writer.WriteLine("Options:");
     writer.WriteLine("  -r, --recursive        recurse into directories");
@@ -248,6 +250,42 @@ static async Task<int> RunPushAsync(
             ? (int)RsyncExitCode.PartialTransferError
             : (int)RsyncExitCode.Ok;
     }
+}
+
+static int RunLocal(string source, string dest, bool recurse, bool checksum, bool delete)
+{
+    LocalSyncResult result;
+    try
+    {
+        result = LocalSyncEngine.Run(source, dest, new LocalSyncOptions(recurse, checksum, delete));
+    }
+    catch (ArgumentException ex)
+    {
+        // Shape errors from the engine (self-copy, dest-inside-source, contents-into-a-file) or a
+        // malformed path — syntax-level, like the parser's own rejections.
+        Console.Error.WriteLine($"rsyncwin: {ex.Message}");
+        return (int)RsyncExitCode.SyntaxError;
+    }
+    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+    {
+        // Missing/unreadable source or an unusable destination root — file I/O (11), never 12:
+        // there is no protocol stream in a local copy.
+        Console.Error.WriteLine($"rsyncwin: {ex.Message}");
+        return (int)ExitCodeMapper.Map(ex);
+    }
+
+    foreach (string name in result.SkippedDirectories)
+        Console.Error.WriteLine($"skipping directory {name}");
+    foreach ((string name, string reason) in result.SkippedNonRegular)
+        Console.Error.WriteLine($"skipping {reason}: {name}");
+    foreach ((string path, string reason) in result.FailedFiles)
+        Console.Error.WriteLine($"rsyncwin: {path}: {reason}");
+    Console.Error.WriteLine($"files transferred: {result.TransferredFiles}, bytes: {result.TransferredBytes}");
+    ReportPruneResult(result.Prune, result.PruneSkipped);
+
+    return result.FailedFiles.Count > 0
+        ? (int)RsyncExitCode.PartialTransferError
+        : (int)RsyncExitCode.Ok;
 }
 
 /// <summary>Shared session-exception handler for the ssh Run* methods: prints the error, checks

@@ -244,17 +244,10 @@ public static class PullSession
         return full;
     }
 
-    /// <summary>
-    /// Win32 FileTime starts at 1601 and <see cref="DateTimeOffset"/> ends at year 9999; rsync's
-    /// mtime varlong is wider on both ends. A peer's bogus timestamp clamps instead of throwing
-    /// out of the session.
-    /// </summary>
-    internal static DateTime ClampedMtimeUtc(long unixSeconds)
-    {
-        const long minSettable = -11_644_473_599; // 1601-01-01T00:00:01Z — FILETIME 0 means "don't change"
-        const long maxSettable = 253_402_300_799; // 9999-12-31T23:59:59Z — DateTimeOffset's ceiling
-        return DateTimeOffset.FromUnixTimeSeconds(Math.Clamp(unixSeconds, minSettable, maxSettable)).UtcDateTime;
-    }
+    /// <summary>Range-clamped mtime conversion — see <see cref="DestinationReplacer.ClampedMtimeUtc"/>
+    /// (moved there so the local-copy engine shares it); kept as a delegating alias for the many
+    /// existing call sites and tests.</summary>
+    internal static DateTime ClampedMtimeUtc(long unixSeconds) => DestinationReplacer.ClampedMtimeUtc(unixSeconds);
 
     /// <summary>
     /// The entry's mtime as it actually landed on disk: local files are written via
@@ -796,8 +789,7 @@ public static class PullSession
         private async Task<bool> ReceiveIntoFileAsync(FileEntry entry, CancellationToken cancellationToken)
         {
             string finalPath = LocalPath(destination, entry);
-            string tempFileName = $".{Path.GetFileName(finalPath)}.{Guid.NewGuid().ToString("N")[..8]}.rsyncwin-tmp";
-            string tempPath = Path.Combine(Path.GetDirectoryName(finalPath)!, tempFileName);
+            string tempPath = DestinationReplacer.TempPathFor(finalPath);
 
             try
             {
@@ -850,15 +842,8 @@ public static class PullSession
 
                 try
                 {
-                    // rsync's contract replaces read-only destinations; File.Move alone refuses.
-                    if (File.Exists(finalPath))
-                    {
-                        FileAttributes attributes = File.GetAttributes(finalPath);
-                        if ((attributes & FileAttributes.ReadOnly) != 0)
-                            File.SetAttributes(finalPath, attributes & ~FileAttributes.ReadOnly);
-                    }
-                    File.Move(tempPath, finalPath, overwrite: true);
-                    File.SetLastWriteTimeUtc(finalPath, ClampedMtimeUtc(entry.ModifiedUnixSeconds));
+                    DestinationReplacer.FinalizeReplace(
+                        tempPath, finalPath, ClampedMtimeUtc(entry.ModifiedUnixSeconds));
                 }
                 catch (Exception e) when (e is IOException or UnauthorizedAccessException)
                 {
