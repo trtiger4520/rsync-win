@@ -56,6 +56,29 @@ public class CommandLineParserTests
         Assert.Equal(@"D:\backup", command.Dest);
     }
 
+    [Theory]
+    [InlineData("-h")]
+    [InlineData("--help")]
+    public void Parse_HelpFlag_ReturnsShowHelp(string flag)
+    {
+        (ParsedCommand? command, ParseFailure? failure) = CommandLineParser.Parse([flag]);
+
+        Assert.Null(failure);
+        Assert.Equal(ParsedAction.ShowHelp, command!.Action);
+    }
+
+    [Theory]
+    [InlineData("-h", "host:/src", @"D:\backup")] // help alongside a valid transfer
+    [InlineData("-rh", "host:/src", @"D:\backup")] // bundled with other short flags
+    [InlineData("--help", "--foo")] // help wins even over an otherwise-unsupported option
+    public void Parse_HelpFlag_WinsOverOtherArguments(params string[] args)
+    {
+        (ParsedCommand? command, ParseFailure? failure) = CommandLineParser.Parse(args);
+
+        Assert.Null(failure);
+        Assert.Equal(ParsedAction.ShowHelp, command!.Action);
+    }
+
     [Fact]
     public void Parse_UnknownLongFlag_ReturnsSyntaxError()
     {

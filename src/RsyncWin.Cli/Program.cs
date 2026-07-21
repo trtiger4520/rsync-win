@@ -21,13 +21,14 @@ static async Task<int> RunAsync(string[] args)
     {
         Console.Error.WriteLine(failure.Message);
         if (failure.ShowUsage)
-            PrintUsage();
+            PrintHelp(Console.Error);
         return (int)RsyncExitCode.SyntaxError;
     }
 
     ParsedCommand cmd = command!;
     return cmd.Action switch
     {
+        ParsedAction.ShowHelp => RunHelp(),
         ParsedAction.DaemonList => await RunDaemonListAsync(cmd.Endpoint!),
         ParsedAction.SshPull => await RunPullAsync(cmd.Source!, cmd.Dest!, cmd.Recurse, cmd.Archive, cmd.Checksum, cmd.Delete, cmd.Secluded, cmd.Compress, cmd.RshOverride),
         ParsedAction.SshPush => await RunPushAsync(cmd.Source!, cmd.Dest!, cmd.Recurse, cmd.Archive, cmd.Checksum, cmd.Delete, cmd.Secluded, cmd.Compress, cmd.RshOverride),
@@ -37,18 +38,40 @@ static async Task<int> RunAsync(string[] args)
     };
 }
 
-/// <summary>Prints every supported invocation form to stderr — shared by every usage-error exit path.</summary>
-static void PrintUsage()
+/// <summary>-h/--help: the full help goes to stdout and the run exits 0 — unlike the usage-error
+/// path, which prints the same text to stderr and exits 1 (rsync convention for both).</summary>
+static int RunHelp()
 {
-    Console.Error.WriteLine("usage: rsyncwin -r [-t|-a] [-e ssh_path] [user@]host:path localdir   (ssh pull)");
-    Console.Error.WriteLine("       rsyncwin -r [-t] [-e ssh_path] localdir [user@]host:path      (ssh push; -a not yet)");
-    Console.Error.WriteLine("       rsyncwin -r [-t|-a] rsync://[user@]host[:port]/module[/path] localdir           (daemon pull)");
-    Console.Error.WriteLine("       rsyncwin -r [-t] localdir rsync://[user@]host[:port]/module[/path]              (daemon push; -a not yet)");
-    Console.Error.WriteLine("       \"[user@]host::module[/path]\" is accepted anywhere \"rsync://host/module[/path]\" is (port always 873)");
-    Console.Error.WriteLine("       rsyncwin rsync://[user@]host[:port]/            (list daemon modules — module left empty)");
-    Console.Error.WriteLine("       daemon auth password is read from the RSYNC_PASSWORD environment variable");
-    Console.Error.WriteLine("       -c/--checksum and --delete work for both pull and push; -s/--secluded-args protects remote paths with spaces");
-    Console.Error.WriteLine("       -z/--compress uses zlibx token compression (pull and push)");
+    PrintHelp(Console.Out);
+    return (int)RsyncExitCode.Ok;
+}
+
+/// <summary>The single source of the usage/help text — stdout for -h/--help, stderr for usage errors.</summary>
+static void PrintHelp(TextWriter writer)
+{
+    writer.WriteLine("rsyncwin — a native Windows rsync client (protocol 31)");
+    writer.WriteLine();
+    writer.WriteLine("Usage:");
+    writer.WriteLine("  rsyncwin [OPTIONS] [user@]host:path localdir                            ssh pull");
+    writer.WriteLine("  rsyncwin [OPTIONS] localdir [user@]host:path                            ssh push (-a not yet)");
+    writer.WriteLine("  rsyncwin [OPTIONS] rsync://[user@]host[:port]/module[/path] localdir    daemon pull");
+    writer.WriteLine("  rsyncwin [OPTIONS] localdir rsync://[user@]host[:port]/module[/path]    daemon push (-a not yet)");
+    writer.WriteLine("  rsyncwin rsync://[user@]host[:port]/                                    list daemon modules");
+    writer.WriteLine();
+    writer.WriteLine("Options:");
+    writer.WriteLine("  -r, --recursive        recurse into directories");
+    writer.WriteLine("  -a, --archive          archive mode: -r plus preserve links/perms/owner/group/devices (pull only for now)");
+    writer.WriteLine("  -t, --times            preserve modification times (already the default; accepted for compatibility)");
+    writer.WriteLine("  -c, --checksum         skip the mtime+size fast path; compare files by full block checksum");
+    writer.WriteLine("      --delete           delete extraneous files from the destination (requires -r or -a)");
+    writer.WriteLine("  -s, --secluded-args    keep remote paths off the ssh command line (alias: --protect-args)");
+    writer.WriteLine("  -z, --compress         compress file data during transfer (zlibx)");
+    writer.WriteLine(@"  -e, --rsh PATH         use PATH as the ssh executable (default: C:\Windows\System32\OpenSSH\ssh.exe)");
+    writer.WriteLine("  -h, --help             show this help and exit");
+    writer.WriteLine();
+    writer.WriteLine("Notes:");
+    writer.WriteLine("  \"[user@]host::module[/path]\" is accepted anywhere \"rsync://host/module[/path]\" is (port always 873).");
+    writer.WriteLine("  Daemon auth password is read from the RSYNC_PASSWORD environment variable.");
 }
 
 static async Task<int> RunPullAsync(

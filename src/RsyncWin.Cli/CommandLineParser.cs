@@ -10,6 +10,7 @@ internal enum ParsedAction
     DaemonPull,
     DaemonPush,
     DaemonList,
+    ShowHelp,
 }
 
 /// <summary>A parsed daemon endpoint from either "rsync://[user@]host[:port]/module[/path]" or
@@ -47,6 +48,12 @@ internal sealed record ParsedCommand(
 /// </summary>
 internal static class CommandLineParser
 {
+    // -h/--help wins over every other argument (rsync convention) — Parse returns this immediately,
+    // so the flag values it carries are never read; only Action matters.
+    private static readonly ParsedCommand HelpCommand = new(
+        ParsedAction.ShowHelp, Recurse: false, Archive: false, Checksum: false, Delete: false,
+        Secluded: false, Compress: false, RshOverride: null, Source: null, Dest: null, Endpoint: null);
+
     public static (ParsedCommand? Command, ParseFailure? Failure) Parse(string[] args)
     {
         string? rshOverride = null;
@@ -87,6 +94,10 @@ internal static class CommandLineParser
             {
                 delete = true;
             }
+            else if (arg == "--help")
+            {
+                return (HelpCommand, null);
+            }
             else if (arg is "-s" or "--secluded-args" or "--protect-args")
             {
                 secluded = true;
@@ -114,6 +125,8 @@ internal static class CommandLineParser
                         case 'c': checksum = true; break;
                         case 's': secluded = true; break;
                         case 'z': compress = true; break;
+                        case 'h': return (HelpCommand, null); // -h is help; --human-readable is not implemented
+
                         default:
                             return (null, new ParseFailure($"rsyncwin: unsupported option -{flag}"));
                     }
@@ -148,8 +161,7 @@ internal static class CommandLineParser
         if (positionals.Count != 2)
         {
             return (null, new ParseFailure(
-                "usage: rsyncwin -r [-t|-a] [-e ssh_path] SOURCE DEST  (exactly one of SOURCE/DEST must be " +
-                "\"[user@]host:path\", \"rsync://[user@]host[:port]/module[/path]\", or \"[user@]host::module[/path]\")",
+                "rsyncwin: expected exactly two arguments (SOURCE and DEST)",
                 ShowUsage: true));
         }
 
