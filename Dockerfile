@@ -14,5 +14,9 @@ COPY --from=build /out/ ./
 
 ENV PATH="/app:${PATH}"
 VOLUME ["/data"]
+
+ARG APP_UID=1000
+ENV APP_UID=${APP_UID}
 USER $APP_UID
+
 ENTRYPOINT ["rsyncwin"]
