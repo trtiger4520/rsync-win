@@ -2,6 +2,11 @@
 
   <PropertyGroup>
     <Version>0.1.0</Version>
+    <Authors>trtiger4520</Authors>
+    <Copyright>Copyright (c) 2026 trtiger4520</Copyright>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/trtiger4520/rsync-win</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/trtiger4520/rsync-win</PackageProjectUrl>
     <TargetFramework>net10.0</TargetFramework>
     <LangVersion>latest</LangVersion>
     <Nullable>enable</Nullable>
