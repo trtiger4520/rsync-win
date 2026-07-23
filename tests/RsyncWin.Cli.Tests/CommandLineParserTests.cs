@@ -288,4 +288,63 @@ public class CommandLineParserTests
         Assert.Null(failure);
         Assert.Equal(ParsedAction.DaemonList, command!.Action);
     }
+
+    [Fact]
+    public void Parse_ProgressFlag_SetsProgressNotProgress2()
+    {
+        (ParsedCommand? command, ParseFailure? failure) =
+            CommandLineParser.Parse(["--progress", "host:/src", @"D:\backup"]);
+
+        Assert.Null(failure);
+        Assert.True(command!.Progress);
+        Assert.False(command.InfoProgress2);
+    }
+
+    [Fact]
+    public void Parse_InfoProgress2_SetsProgress2NotPerFile()
+    {
+        (ParsedCommand? command, ParseFailure? failure) =
+            CommandLineParser.Parse(["--info=progress2", "host:/src", @"D:\backup"]);
+
+        Assert.Null(failure);
+        Assert.True(command!.InfoProgress2);
+        Assert.False(command.Progress);
+    }
+
+    [Theory]
+    [InlineData("--info=progress")]
+    [InlineData("--info=progress1")]
+    public void Parse_InfoProgressPerFileForms_SetPerFileProgress(string flag)
+    {
+        (ParsedCommand? command, ParseFailure? failure) =
+            CommandLineParser.Parse([flag, "host:/src", @"D:\backup"]);
+
+        Assert.Null(failure);
+        Assert.True(command!.Progress);
+        Assert.False(command.InfoProgress2);
+    }
+
+    [Fact]
+    public void Parse_UnsupportedInfoFlag_ReturnsSyntaxError()
+    {
+        (ParsedCommand? command, ParseFailure? failure) =
+            CommandLineParser.Parse(["--info=stats2", "host:/src", @"D:\backup"]);
+
+        Assert.Null(command);
+        Assert.NotNull(failure);
+        Assert.Contains("stats2", failure!.Message);
+    }
+
+    [Fact]
+    public void Parse_DashCapitalP_IsStillRejected()
+    {
+        // -P (= --partial --progress) is not implemented: --partial's keep-partial-on-failure
+        // semantics are a receiver behavior change, so -P stays rejected (docs/progress-spec.md).
+        (ParsedCommand? command, ParseFailure? failure) =
+            CommandLineParser.Parse(["-P", "host:/src", @"D:\backup"]);
+
+        Assert.Null(command);
+        Assert.NotNull(failure);
+        Assert.Contains("-P", failure!.Message);
+    }
 }

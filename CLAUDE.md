@@ -136,6 +136,12 @@ resend or an exit-12 desync**.
 - **Exit codes**: map Windows filesystem failures to **11** (file I/O), not 12 (protocol stream).
   `ssh.exe` exiting 255 means SSH itself failed → report 5 and surface its stderr.
 - `--checksum` skips the mtime+size fast path and always does a full block comparison.
+- **`--progress` / `--info=progress2` are client-local display only** — they render byte counters we
+  already produce and are **never** added to the server argv (`ServerArgvBuilder` untouched), so they
+  exchange zero wire bytes (no capture/interop gate, like P12). The pure core `FileReceiver` takes
+  only an `Action<long>` byte-advance delegate; the `ITransferProgressSink` seam and `ProgressRenderer`
+  live outside `RsyncWin.Protocol`. Format pinned in `docs/progress-spec.md`. `-P` (= `--partial
+  --progress`) stays rejected — `--partial`'s keep-partial-on-failure is an unimplemented receiver change.
 
 ## Testing
 

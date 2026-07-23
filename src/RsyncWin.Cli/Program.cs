@@ -30,11 +30,11 @@ static async Task<int> RunAsync(string[] args)
     {
         ParsedAction.ShowHelp => RunHelp(),
         ParsedAction.DaemonList => await RunDaemonListAsync(cmd.Endpoint!),
-        ParsedAction.SshPull => await RunPullAsync(cmd.Source!, cmd.Dest!, cmd.Recurse, cmd.Archive, cmd.Checksum, cmd.Delete, cmd.Secluded, cmd.Compress, cmd.RshOverride),
-        ParsedAction.SshPush => await RunPushAsync(cmd.Source!, cmd.Dest!, cmd.Recurse, cmd.Archive, cmd.Checksum, cmd.Delete, cmd.Secluded, cmd.Compress, cmd.RshOverride),
-        ParsedAction.DaemonPull => await RunDaemonPullAsync(cmd.Endpoint!, cmd.Dest!, cmd.Recurse, cmd.Archive, cmd.Checksum, cmd.Delete, cmd.Compress),
-        ParsedAction.DaemonPush => await RunDaemonPushAsync(cmd.Source!, cmd.Endpoint!, cmd.Recurse, cmd.Archive, cmd.Checksum, cmd.Delete, cmd.Compress),
-        ParsedAction.LocalCopy => RunLocal(cmd.Source!, cmd.Dest!, cmd.Recurse || cmd.Archive, cmd.Checksum, cmd.Delete),
+        ParsedAction.SshPull => await RunPullAsync(cmd.Source!, cmd.Dest!, cmd.Recurse, cmd.Archive, cmd.Checksum, cmd.Delete, cmd.Secluded, cmd.Compress, cmd.RshOverride, cmd.Progress, cmd.InfoProgress2),
+        ParsedAction.SshPush => await RunPushAsync(cmd.Source!, cmd.Dest!, cmd.Recurse, cmd.Archive, cmd.Checksum, cmd.Delete, cmd.Secluded, cmd.Compress, cmd.RshOverride, cmd.Progress, cmd.InfoProgress2),
+        ParsedAction.DaemonPull => await RunDaemonPullAsync(cmd.Endpoint!, cmd.Dest!, cmd.Recurse, cmd.Archive, cmd.Checksum, cmd.Delete, cmd.Compress, cmd.Progress, cmd.InfoProgress2),
+        ParsedAction.DaemonPush => await RunDaemonPushAsync(cmd.Source!, cmd.Endpoint!, cmd.Recurse, cmd.Archive, cmd.Checksum, cmd.Delete, cmd.Compress, cmd.Progress, cmd.InfoProgress2),
+        ParsedAction.LocalCopy => RunLocal(cmd.Source!, cmd.Dest!, cmd.Recurse || cmd.Archive, cmd.Checksum, cmd.Delete, cmd.Progress, cmd.InfoProgress2),
         _ => throw new InvalidOperationException($"unhandled parsed action {cmd.Action}"),
     };
 }
@@ -68,6 +68,8 @@ static void PrintHelp(TextWriter writer)
     writer.WriteLine("      --delete           delete extraneous files from the destination (requires -r or -a)");
     writer.WriteLine("  -s, --secluded-args    keep remote paths off the ssh command line (alias: --protect-args)");
     writer.WriteLine("  -z, --compress         compress file data during transfer (zlibx)");
+    writer.WriteLine("      --progress         show a per-file progress bar (bytes, %, rate, ETA)");
+    writer.WriteLine("      --info=progress2   show a single progress line for the whole transfer");
     writer.WriteLine(@"  -e, --rsh PATH         use PATH as the ssh executable (default: C:\Windows\System32\OpenSSH\ssh.exe)");
     writer.WriteLine("  -h, --help             show this help and exit");
     writer.WriteLine();
@@ -76,8 +78,20 @@ static void PrintHelp(TextWriter writer)
     writer.WriteLine("  Daemon auth password is read from the RSYNC_PASSWORD environment variable.");
 }
 
+/// <summary>Builds the progress sink for a run: a real renderer when <c>--progress</c> or
+/// <c>--info=progress2</c> is set (whole-transfer wins), else the no-op sink. Renders to stderr, and
+/// only animates with carriage returns when stderr is a real console (docs/progress-spec.md).</summary>
+static ITransferProgressSink CreateProgressSink(bool progress, bool infoProgress2)
+{
+    if (!progress && !infoProgress2)
+        return NullProgressSink.Instance;
+    ProgressMode mode = infoProgress2 ? ProgressMode.WholeTransfer : ProgressMode.PerFile;
+    return new ProgressRenderer(Console.Error, animate: !Console.IsErrorRedirected, mode);
+}
+
 static async Task<int> RunPullAsync(
-    string source, string dest, bool recurse, bool archive, bool checksum, bool delete, bool secluded, bool compress, string? rshOverride)
+    string source, string dest, bool recurse, bool archive, bool checksum, bool delete, bool secluded, bool compress, string? rshOverride,
+    bool progress, bool infoProgress2)
 {
     (string? user, string host, string remotePath) = CommandLineParser.SplitRemoteSpec(source);
 
@@ -115,7 +129,8 @@ static async Task<int> RunPullAsync(
         PullSession.Result result;
         try
         {
-            result = await PullSession.RunAsync(transport, serverArgs, dest, handshake: handshake, delete: delete);
+            result = await PullSession.RunAsync(transport, serverArgs, dest, handshake: handshake, delete: delete,
+                progress: CreateProgressSink(progress, infoProgress2));
         }
         catch (Exception ex) when (ex is ProtocolException or InvalidDataException or IOException or UnauthorizedAccessException)
         {
@@ -142,7 +157,8 @@ static async Task<int> RunPullAsync(
 }
 
 static async Task<int> RunPushAsync(
-    string source, string dest, bool recurse, bool archive, bool checksum, bool delete, bool secluded, bool compress, string? rshOverride)
+    string source, string dest, bool recurse, bool archive, bool checksum, bool delete, bool secluded, bool compress, string? rshOverride,
+    bool progress, bool infoProgress2)
 {
     if (archive)
     {
@@ -215,7 +231,8 @@ static async Task<int> RunPushAsync(
         PushSession.Result result;
         try
         {
-            result = await PushSession.RunAsync(transport, serverArgs, entries, handshake: handshake);
+            result = await PushSession.RunAsync(transport, serverArgs, entries, handshake: handshake,
+                progress: CreateProgressSink(progress, infoProgress2));
         }
         catch (Exception ex) when (ex is ProtocolException or InvalidDataException or IOException or UnauthorizedAccessException)
         {
@@ -252,12 +269,13 @@ static async Task<int> RunPushAsync(
     }
 }
 
-static int RunLocal(string source, string dest, bool recurse, bool checksum, bool delete)
+static int RunLocal(string source, string dest, bool recurse, bool checksum, bool delete, bool progress, bool infoProgress2)
 {
     LocalSyncResult result;
     try
     {
-        result = LocalSyncEngine.Run(source, dest, new LocalSyncOptions(recurse, checksum, delete));
+        result = LocalSyncEngine.Run(source, dest, new LocalSyncOptions(recurse, checksum, delete),
+            CreateProgressSink(progress, infoProgress2));
     }
     catch (ArgumentException ex)
     {
@@ -327,7 +345,8 @@ static void ReportPruneResult(PruneResult prune, bool pruneSkippedDueToIoError)
 }
 
 static async Task<int> RunDaemonPullAsync(
-    DaemonEndpoint endpoint, string dest, bool recurse, bool archive, bool checksum, bool delete, bool compress)
+    DaemonEndpoint endpoint, string dest, bool recurse, bool archive, bool checksum, bool delete, bool compress,
+    bool progress, bool infoProgress2)
 {
     var serverArgs = new ServerArgvBuilder
     {
@@ -358,7 +377,8 @@ static async Task<int> RunDaemonPullAsync(
         PullSession.Result result;
         try
         {
-            result = await PullSession.RunAsync(transport, serverArgs, dest, handshake: handshake, delete: delete);
+            result = await PullSession.RunAsync(transport, serverArgs, dest, handshake: handshake, delete: delete,
+                progress: CreateProgressSink(progress, infoProgress2));
         }
         catch (Exception ex) when (ex is ProtocolException or InvalidDataException or IOException or UnauthorizedAccessException)
         {
@@ -380,7 +400,8 @@ static async Task<int> RunDaemonPullAsync(
 }
 
 static async Task<int> RunDaemonPushAsync(
-    string source, DaemonEndpoint endpoint, bool recurse, bool archive, bool checksum, bool delete, bool compress)
+    string source, DaemonEndpoint endpoint, bool recurse, bool archive, bool checksum, bool delete, bool compress,
+    bool progress, bool infoProgress2)
 {
     if (archive)
     {
@@ -441,7 +462,8 @@ static async Task<int> RunDaemonPushAsync(
         PushSession.Result result;
         try
         {
-            result = await PushSession.RunAsync(transport, serverArgs, entries, handshake: handshake);
+            result = await PushSession.RunAsync(transport, serverArgs, entries, handshake: handshake,
+                progress: CreateProgressSink(progress, infoProgress2));
         }
         catch (Exception ex) when (ex is ProtocolException or InvalidDataException or IOException or UnauthorizedAccessException)
         {

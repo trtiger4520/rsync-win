@@ -141,4 +141,43 @@ public class FileReceiverTests
         Assert.Equal(10, result.MatchedBytes);
         Assert.Equal("XYZABCDEFGHIJ"u8.ToArray(), output.ToArray());
     }
+
+    [Fact]
+    public async Task ProgressCallback_ReportsEveryReconstructedByte_LiteralThenEachBlock()
+    {
+        // Same 3-byte literal + three-block stream as above: the progress callback must fire once per
+        // literal chunk and once per copied basis block, and its running sum must equal the file's
+        // literal + matched byte total (the invariant the --progress bar relies on).
+        byte[] basisBytes = "ABCDEFGHIJ"u8.ToArray();
+        byte[] sumHead = [.. Int32Le(3), .. Int32Le(4), .. Int32Le(2), .. Int32Le(2)];
+        byte[] literal = "XYZ"u8.ToArray();
+        byte[] tokens = [.. Int32Le(literal.Length), .. literal, .. Int32Le(-1), .. Int32Le(-2), .. Int32Le(-3), .. Int32Le(0)];
+
+        var hasher = StrongChecksum.CreateFileSum(ChecksumAlgorithm.Md5, seed: 0, protocol: 31);
+        hasher.Append(literal);
+        hasher.Append("ABCD"u8);
+        hasher.Append("EFGH"u8);
+        hasher.Append("IJ"u8);
+        byte[] trailer = new byte[16];
+        hasher.Finish(trailer);
+
+        byte[] payload = [.. sumHead, .. tokens, .. trailer];
+        var reader = ReaderOver(payload);
+        using var basis = new MemoryStream(basisBytes);
+        using var output = new MemoryStream();
+
+        long advanced = 0;
+        var chunks = new List<long>();
+        void OnAdvance(long b) { advanced += b; chunks.Add(b); }
+
+        FileReceiveResult result = await FileReceiver.ReceiveAsync(
+            reader, output, ChecksumAlgorithm.Md5, seed: 0, protocol: 31, trailerLength: 16,
+            cancellationToken: default, basis: basis, onBytesAdvanced: OnAdvance);
+
+        Assert.True(result.ChecksumMatches);
+        Assert.Equal(result.LiteralBytes + result.MatchedBytes, advanced);
+        Assert.Equal(13, advanced);
+        // literal run (3), then blocks 0,1,2 with the remainder rule on the last (4, 4, 2).
+        Assert.Equal([3L, 4L, 4L, 2L], chunks);
+    }
 }

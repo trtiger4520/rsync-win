@@ -41,8 +41,10 @@ public static class LocalSyncEngine
     /// root failure (missing source, unreadable tree — the caller's exit-11 path). Per-file
     /// failures never throw; they land in <see cref="LocalSyncResult.FailedFiles"/>.
     /// </summary>
-    public static LocalSyncResult Run(string sourceSpec, string destSpec, LocalSyncOptions options)
+    public static LocalSyncResult Run(
+        string sourceSpec, string destSpec, LocalSyncOptions options, ITransferProgressSink? progress = null)
     {
+        progress ??= NullProgressSink.Instance;
         LocalPathPolicy policy = LocalPathPolicy.Current;
 
         // Trailing-slash intent must be read off the raw specs — Path.GetFullPath normalization is
@@ -68,7 +70,9 @@ public static class LocalSyncEngine
 
         if (!sourceIsDirectory)
         {
-            SyncSingleFileSource(fullSource, fullDest, destEndsWithSeparator, options.Checksum, state);
+            progress.Begin(RegularFileLengthOrZero(fullSource), 1);
+            SyncSingleFileSource(fullSource, fullDest, destEndsWithSeparator, options.Checksum, state, progress);
+            progress.End();
             return state.ToResult();
         }
 
@@ -88,6 +92,19 @@ public static class LocalSyncEngine
             throw new ArgumentException($"destination \"{destSpec}\" must be a directory to receive the contents of \"{sourceSpec}\"");
 
         IReadOnlyList<EnumeratedEntry> entries = FileEnumerator.Enumerate(fullSource); // fatal → exit 11
+
+        // Progress denominators over the regular files in flist order (an up-to-date skip later just
+        // means those bytes never get copied — same short-of-100% quirk as the wire paths).
+        long progressTotalBytes = 0;
+        int progressTotalFiles = 0;
+        foreach (EnumeratedEntry entry in entries)
+        {
+            if (!entry.Wire.IsRegularFile)
+                continue;
+            progressTotalBytes += entry.Wire.Size;
+            progressTotalFiles++;
+        }
+        progress.Begin(progressTotalBytes, progressTotalFiles);
 
         // Copy pass in flist order (parents sort before their children, so directories exist by the
         // time their contents arrive). Directory mtimes are restored afterwards, deepest first — the
@@ -124,7 +141,7 @@ public static class LocalSyncEngine
             }
             else if (entry.Wire.IsRegularFile)
             {
-                SyncRegularFile(name, entry.AbsolutePath, destPath, options.Checksum, state);
+                SyncRegularFile(name, entry.AbsolutePath, destPath, options.Checksum, state, progress);
             }
             else
             {
@@ -178,6 +195,7 @@ public static class LocalSyncEngine
             }
         }
 
+        progress.End();
         return state.ToResult();
     }
 
@@ -199,7 +217,8 @@ public static class LocalSyncEngine
     }
 
     private static void SyncSingleFileSource(
-        string fullSource, string fullDest, bool destEndsWithSeparator, bool checksum, SyncState state)
+        string fullSource, string fullDest, bool destEndsWithSeparator, bool checksum, SyncState state,
+        ITransferProgressSink progress)
     {
         // "rsyncwin file dst\" (or dst being an existing directory) drops the file inside dst,
         // creating dst if needed; otherwise dst names the file itself. A source==target invocation
@@ -215,14 +234,15 @@ public static class LocalSyncEngine
             target = fullDest;
         }
 
-        SyncRegularFile(Path.GetFileName(fullSource), fullSource, target, checksum, state);
+        SyncRegularFile(Path.GetFileName(fullSource), fullSource, target, checksum, state, progress);
     }
 
     /// <summary>Brings one regular file up to date at <paramref name="destPath"/>: skip fast path
     /// (size + exact mtime), or with --checksum a streamed byte compare (attribute-only mtime touch
     /// when only the mtime differs), else copy-to-temp + atomic replace. All failures are per-file.</summary>
     private static void SyncRegularFile(
-        string name, string sourcePath, string destPath, bool checksum, SyncState state)
+        string name, string sourcePath, string destPath, bool checksum, SyncState state,
+        ITransferProgressSink progress)
     {
         FileStream source;
         try
@@ -280,15 +300,17 @@ public static class LocalSyncEngine
             }
 
             string tempPath = DestinationReplacer.TempPathFor(destPath);
+            progress.BeginFile(name, sourceLength);
             try
             {
                 source.Position = 0; // ContentsEqual above may have consumed the stream
                 using (var temp = new FileStream(tempPath, FileMode.Create, FileAccess.Write))
-                    source.CopyTo(temp);
+                    CopyReporting(source, temp, progress);
                 DestinationReplacer.FinalizeReplace(tempPath, destPath, sourceMtimeUtc);
             }
             finally
             {
+                progress.EndFile();
                 try
                 {
                     File.Delete(tempPath);
@@ -375,6 +397,35 @@ public static class LocalSyncEngine
                 return true;
             if (!sourceBuffer.AsSpan(0, sourceRead).SequenceEqual(destBuffer.AsSpan(0, destRead)))
                 return false;
+        }
+    }
+
+    /// <summary>Copies <paramref name="source"/> (already positioned at 0) to
+    /// <paramref name="destination"/>, reporting each written chunk to <paramref name="progress"/> so
+    /// a large local file animates a progress bar. Equivalent to <see cref="Stream.CopyTo(Stream)"/>
+    /// otherwise.</summary>
+    private static void CopyReporting(Stream source, Stream destination, ITransferProgressSink progress)
+    {
+        byte[] buffer = new byte[128 * 1024];
+        int read;
+        while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
+        {
+            destination.Write(buffer, 0, read);
+            progress.Advance(read);
+        }
+    }
+
+    /// <summary>Best-effort byte length of a regular file for the progress denominator — 0 if it
+    /// cannot be stat'd (the copy itself will then record the real per-file failure).</summary>
+    private static long RegularFileLengthOrZero(string path)
+    {
+        try
+        {
+            return new FileInfo(path).Length;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return 0;
         }
     }
 
