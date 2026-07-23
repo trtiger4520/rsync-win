@@ -37,6 +37,8 @@ internal sealed record ParsedCommand(
     bool Delete,
     bool Secluded,
     bool Compress,
+    bool Progress,
+    bool InfoProgress2,
     string? RshOverride,
     string? Source,
     string? Dest,
@@ -53,7 +55,8 @@ internal static class CommandLineParser
     // so the flag values it carries are never read; only Action matters.
     private static readonly ParsedCommand HelpCommand = new(
         ParsedAction.ShowHelp, Recurse: false, Archive: false, Checksum: false, Delete: false,
-        Secluded: false, Compress: false, RshOverride: null, Source: null, Dest: null, Endpoint: null);
+        Secluded: false, Compress: false, Progress: false, InfoProgress2: false,
+        RshOverride: null, Source: null, Dest: null, Endpoint: null);
 
     public static (ParsedCommand? Command, ParseFailure? Failure) Parse(string[] args)
     {
@@ -64,6 +67,8 @@ internal static class CommandLineParser
         bool delete = false;
         bool secluded = false;
         bool compress = false;
+        bool progress = false;
+        bool infoProgress2 = false;
         var positionals = new List<string>();
 
         for (int i = 0; i < args.Length; i++)
@@ -106,6 +111,27 @@ internal static class CommandLineParser
             else if (arg is "-z" or "--compress")
             {
                 compress = true;
+            }
+            else if (arg == "--progress")
+            {
+                progress = true;
+            }
+            else if (arg.StartsWith("--info=", StringComparison.Ordinal))
+            {
+                // Only the progress info flags are supported (a client-local display concern, never
+                // forwarded to the server). rsync's --info is a comma list of FLAG[LEVEL]; we accept
+                // progress/progress1 (per-file) and progress2 (whole-transfer) and reject the rest
+                // rather than silently ignoring an unimplemented info category.
+                foreach (string item in arg["--info=".Length..].Split(',', StringSplitOptions.RemoveEmptyEntries))
+                {
+                    switch (item)
+                    {
+                        case "progress2": infoProgress2 = true; break;
+                        case "progress" or "progress1": progress = true; break;
+                        default:
+                            return (null, new ParseFailure($"rsyncwin: unsupported --info flag \"{item}\" (only progress/progress2)"));
+                    }
+                }
             }
             else if (arg.Length > 2 && arg[0] == '-' && arg[1] == '-')
             {
@@ -155,7 +181,7 @@ internal static class CommandLineParser
             }
             else if (listEndpoint!.Module.Length == 0)
             {
-                return (new ParsedCommand(ParsedAction.DaemonList, recurse, archive, checksum, delete, secluded, compress, rshOverride, null, null, listEndpoint), null);
+                return (new ParsedCommand(ParsedAction.DaemonList, recurse, archive, checksum, delete, secluded, compress, progress, infoProgress2, rshOverride, null, null, listEndpoint), null);
             }
         }
 
@@ -191,10 +217,10 @@ internal static class CommandLineParser
 
             if (sourceIsDaemon)
             {
-                return (new ParsedCommand(ParsedAction.DaemonPull, recurse, archive, checksum, delete, secluded, compress, rshOverride, null, dest, sourceDaemon), null);
+                return (new ParsedCommand(ParsedAction.DaemonPull, recurse, archive, checksum, delete, secluded, compress, progress, infoProgress2, rshOverride, null, dest, sourceDaemon), null);
             }
 
-            return (new ParsedCommand(ParsedAction.DaemonPush, recurse, archive, checksum, delete, secluded, compress, rshOverride, source, null, destDaemon), null);
+            return (new ParsedCommand(ParsedAction.DaemonPush, recurse, archive, checksum, delete, secluded, compress, progress, infoProgress2, rshOverride, source, null, destDaemon), null);
         }
 
         // rsync's rule: the FIRST ':' splits host from path, applied to both sides — whichever one
@@ -204,16 +230,16 @@ internal static class CommandLineParser
         bool destIsRemote = IsRemoteSpec(dest);
 
         if (sourceIsRemote && !destIsRemote)
-            return (new ParsedCommand(ParsedAction.SshPull, recurse, archive, checksum, delete, secluded, compress, rshOverride, source, dest, null), null);
+            return (new ParsedCommand(ParsedAction.SshPull, recurse, archive, checksum, delete, secluded, compress, progress, infoProgress2, rshOverride, source, dest, null), null);
 
         if (destIsRemote && !sourceIsRemote)
-            return (new ParsedCommand(ParsedAction.SshPush, recurse, archive, checksum, delete, secluded, compress, rshOverride, source, dest, null), null);
+            return (new ParsedCommand(ParsedAction.SshPush, recurse, archive, checksum, delete, secluded, compress, progress, infoProgress2, rshOverride, source, dest, null), null);
 
         if (sourceIsRemote)
             return (null, new ParseFailure("rsyncwin: remote-to-remote transfers are not supported", ShowUsage: true));
 
         // Neither side is remote: local-to-local direct copy (no wire, no transport).
-        return (new ParsedCommand(ParsedAction.LocalCopy, recurse, archive, checksum, delete, secluded, compress, rshOverride, source, dest, null), null);
+        return (new ParsedCommand(ParsedAction.LocalCopy, recurse, archive, checksum, delete, secluded, compress, progress, infoProgress2, rshOverride, source, dest, null), null);
     }
 
     /// <summary>

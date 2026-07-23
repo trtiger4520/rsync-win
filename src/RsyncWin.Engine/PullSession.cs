@@ -63,8 +63,10 @@ public static class PullSession
         string destinationDirectory,
         CancellationToken cancellationToken = default,
         HandshakeOptions? handshake = null,
-        bool delete = false)
+        bool delete = false,
+        ITransferProgressSink? progress = null)
     {
+        progress ??= NullProgressSink.Instance;
         SessionChannel channel = await SessionSetup.OpenAsync(transport, serverArgs, cancellationToken, handshake);
         IReadOnlyList<FileEntry> entries = channel.FileList.Entries;
         LocalPathPolicy pathPolicy = LocalPathPolicy.Current;
@@ -114,9 +116,23 @@ public static class PullSession
         }
         Directory.CreateDirectory(destinationDirectory);
 
+        // Progress denominators: every regular file still in the transfer (a fast-path skip later
+        // just means its bytes never arrive, so the bar may stop short of 100% — the same quirk
+        // stock rsync's progress2 has, docs/progress-spec.md).
+        long progressTotalBytes = 0;
+        int progressTotalFiles = 0;
+        for (int ndx = 0; ndx < entries.Count; ndx++)
+        {
+            if (excluded.Contains(ndx) || !entries[ndx].IsRegularFile)
+                continue;
+            progressTotalBytes += entries[ndx].Size;
+            progressTotalFiles++;
+        }
+        progress.Begin(progressTotalBytes, progressTotalFiles);
+
         var outbound = new NdxCodec();   // one encoder and one decoder per direction, whole session
         var inbound = new NdxCodec();
-        var receiver = new ReplyReceiver(channel, inbound, destinationDirectory);
+        var receiver = new ReplyReceiver(channel, inbound, destinationDirectory, progress);
 
         // ---- phase 0: walk the sorted list, create dirs, request every out-of-date file -------
         // Request-writing and reply-reading run as two concurrent loops, coordinated through a
@@ -188,6 +204,8 @@ public static class PullSession
                 prune = LocalTreePruner.Prune(destinationDirectory, keep, serverArgs.Recurse, pathPolicy);
             }
         }
+
+        progress.End();
 
         return new Result(
             channel.Session,
@@ -708,7 +726,7 @@ public static class PullSession
             TaskScheduler.Default);
 
     /// <summary>Reads sender replies until an NDX_DONE echo, writing files as they stream in.</summary>
-    private sealed class ReplyReceiver(SessionChannel channel, NdxCodec inbound, string destination)
+    private sealed class ReplyReceiver(SessionChannel channel, NdxCodec inbound, string destination, ITransferProgressSink progress)
     {
         // Owned solely by ReceiveUntilDoneAsync — one phase runs at a time, never concurrently
         // with itself, so no synchronization is needed beyond the channel handoff below.
@@ -791,6 +809,7 @@ public static class PullSession
             string finalPath = LocalPath(destination, entry);
             string tempPath = DestinationReplacer.TempPathFor(finalPath);
 
+            progress.BeginFile(entry.Name, entry.Size);
             try
             {
                 // Reopen-in-receiver design (see WriteRegularFileRequestAsync): the request writer
@@ -819,7 +838,8 @@ public static class PullSession
                             StrongChecksum.DigestLength(channel.Session.TransferChecksum),
                             cancellationToken,
                             basis,
-                            channel.Session.Compression);
+                            channel.Session.Compression,
+                            progress.Advance);
                     }
                 }
                 finally
@@ -831,6 +851,9 @@ public static class PullSession
                     // delete-then-rename switch is needed here.
                     if (basis is not null)
                         await basis.DisposeAsync();
+                    // The token stream is fully consumed here (success or checksum-mismatch alike),
+                    // so the file's on-screen progress line is done — a redo re-shows it next phase.
+                    progress.EndFile();
                 }
 
                 if (!received.ChecksumMatches)

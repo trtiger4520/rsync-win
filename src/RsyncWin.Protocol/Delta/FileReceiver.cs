@@ -43,6 +43,12 @@ public static class FileReceiver
     /// (blength/remainder/count) needed to resolve a reference comes from <c>sumHead</c>, the
     /// echoed sum head we already read off the wire above — not from a separate parameter.
     /// </param>
+    /// <param name="onBytesAdvanced">
+    /// Optional client-local progress callback, invoked synchronously with the byte count each time
+    /// reconstructed bytes (literal or matched) are written to <paramref name="destination"/>. Purely
+    /// a display signal (<c>docs/progress-spec.md</c>): a plain delegate, so the pure core stays
+    /// I/O-free. Null (the default) disables it entirely.
+    /// </param>
     public static async ValueTask<FileReceiveResult> ReceiveAsync(
         MultiplexReader input,
         Stream destination,
@@ -52,7 +58,8 @@ public static class FileReceiver
         int trailerLength,
         CancellationToken cancellationToken = default,
         Stream? basis = null,
-        CompressionMethod compression = CompressionMethod.None)
+        CompressionMethod compression = CompressionMethod.None,
+        Action<long>? onBytesAdvanced = null)
     {
         var sumHead = SumHeader.Read(
             await input.ReadDataExactlyAsync(SumHeader.Size, cancellationToken), trailerLength);
@@ -60,8 +67,8 @@ public static class FileReceiver
         var hasher = StrongChecksum.CreateFileSum(algorithm, seed, protocol);
 
         (long written, long matched) = compression == CompressionMethod.Zlibx
-            ? await ReceiveZlibxTokensAsync(input, destination, hasher, sumHead, basis, cancellationToken)
-            : await ReceivePlainTokensAsync(input, destination, hasher, sumHead, basis, cancellationToken);
+            ? await ReceiveZlibxTokensAsync(input, destination, hasher, sumHead, basis, cancellationToken, onBytesAdvanced)
+            : await ReceivePlainTokensAsync(input, destination, hasher, sumHead, basis, cancellationToken, onBytesAdvanced);
 
         byte[] senderSum = await input.ReadDataExactlyAsync(trailerLength, cancellationToken);
         byte[] computed = new byte[16];
@@ -72,7 +79,7 @@ public static class FileReceiver
 
     private static async ValueTask<(long Written, long Matched)> ReceivePlainTokensAsync(
         MultiplexReader input, Stream destination, WholeFileChecksum hasher, SumHeader sumHead,
-        Stream? basis, CancellationToken cancellationToken)
+        Stream? basis, CancellationToken cancellationToken, Action<long>? onBytesAdvanced)
     {
         long written = 0;
         long matched = 0;
@@ -85,7 +92,7 @@ public static class FileReceiver
 
             if (token.IsBlockReference)
             {
-                matched += await CopyBasisBlockAsync(token.BlockIndex, sumHead, basis, destination, hasher, cancellationToken);
+                matched += await CopyBasisBlockAsync(token.BlockIndex, sumHead, basis, destination, hasher, cancellationToken, onBytesAdvanced);
                 continue;
             }
 
@@ -95,6 +102,7 @@ public static class FileReceiver
                 byte[] literal = await input.ReadDataExactlyAsync(chunk, cancellationToken);
                 hasher.Append(literal);
                 await destination.WriteAsync(literal, cancellationToken);
+                onBytesAdvanced?.Invoke(chunk);
                 remaining -= chunk;
             }
             written += token.LiteralLength;
@@ -119,7 +127,7 @@ public static class FileReceiver
     /// </summary>
     private static async ValueTask<(long Written, long Matched)> ReceiveZlibxTokensAsync(
         MultiplexReader input, Stream destination, WholeFileChecksum hasher, SumHeader sumHead,
-        Stream? basis, CancellationToken cancellationToken)
+        Stream? basis, CancellationToken cancellationToken, Action<long>? onBytesAdvanced)
     {
         var runs = new List<byte[]>();
         var currentRun = new List<byte>();
@@ -185,12 +193,13 @@ public static class FileReceiver
                 ReadOnlyMemory<byte> slice = allLiterals.AsMemory(cumulative[op.RunIndex], cumulative[op.RunIndex + 1] - cumulative[op.RunIndex]);
                 hasher.Append(slice.Span);
                 await destination.WriteAsync(slice, cancellationToken);
+                onBytesAdvanced?.Invoke(slice.Length);
                 written += slice.Length;
             }
             else
             {
                 for (int i = 0; i < op.BlockCount; i++)
-                    matched += await CopyBasisBlockAsync(op.BlockStart + i, sumHead, basis, destination, hasher, cancellationToken);
+                    matched += await CopyBasisBlockAsync(op.BlockStart + i, sumHead, basis, destination, hasher, cancellationToken, onBytesAdvanced);
             }
         }
 
@@ -237,7 +246,7 @@ public static class FileReceiver
     /// hasher, returning the block's byte length. Shared by the plain and zlibx token loops.</summary>
     private static async ValueTask<int> CopyBasisBlockAsync(
         int index, SumHeader sumHead, Stream? basis, Stream destination, WholeFileChecksum hasher,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken, Action<long>? onBytesAdvanced)
     {
         if (sumHead.IsFullTransferRequest)
             throw new InvalidDataException(
@@ -259,6 +268,7 @@ public static class FileReceiver
             : await ReadBasisBlockAsync(basis, offset, length, cancellationToken);
         hasher.Append(block);
         await destination.WriteAsync(block, cancellationToken);
+        onBytesAdvanced?.Invoke(length);
         return length;
     }
 

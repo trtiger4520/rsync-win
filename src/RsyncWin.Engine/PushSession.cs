@@ -76,8 +76,10 @@ public static class PushSession
         ServerArgvBuilder serverArgs,
         IReadOnlyList<EnumeratedEntry> entries,
         CancellationToken cancellationToken = default,
-        HandshakeOptions? handshake = null)
+        HandshakeOptions? handshake = null,
+        ITransferProgressSink? progress = null)
     {
+        progress ??= NullProgressSink.Instance;
         SessionContext session = await HandshakeRunner.RunClientAsync(
             transport.Input, transport.Output, handshake ?? new HandshakeOptions(), cancellationToken);
         if (session.Protocol < 31)
@@ -128,9 +130,22 @@ public static class PushSession
         List<EnumeratedEntry> sortedEntries = [.. entries];
         sortedEntries.Sort((a, b) => FileNameComparer.Instance.Compare(a.Wire, b.Wire));
 
+        // Progress denominators: the regular files we may send (an attribute-only or up-to-date reply
+        // just means those bytes never move — same short-of-100% quirk as pull, docs/progress-spec.md).
+        long progressTotalBytes = 0;
+        int progressTotalFiles = 0;
+        foreach (EnumeratedEntry entry in sortedEntries)
+        {
+            if (!entry.Wire.IsRegularFile)
+                continue;
+            progressTotalBytes += entry.Wire.Size;
+            progressTotalFiles++;
+        }
+        progress.Begin(progressTotalBytes, progressTotalFiles);
+
         var outbound = new NdxCodec(); // our own reply ndx encoder
         var inbound = new NdxCodec();  // the server-generator's request ndx decoder
-        var sender = new ReplySender(reader, writer, outbound, inbound, sortedEntries, session);
+        var sender = new ReplySender(reader, writer, outbound, inbound, sortedEntries, session, progress);
 
         try
         {
@@ -172,6 +187,8 @@ public static class PushSession
                 .Select(m => m.Text.TrimEnd('\n')));
             throw new ProtocolException(ex.ExitCode, string.IsNullOrEmpty(serverText) ? ex.Message : serverText);
         }
+
+        progress.End();
 
         // MSG_DELETED payloads are the deleted path bytes, with a trailing NUL for directories
         // (ssh31-push-delete). Surface them for the CLI's "deleting <path>" report.
@@ -329,7 +346,8 @@ public static class PushSession
         NdxCodec outbound,
         NdxCodec inbound,
         IReadOnlyList<EnumeratedEntry> sortedEntries,
-        SessionContext session)
+        SessionContext session,
+        ITransferProgressSink progress)
     {
         private readonly int _digestLength = StrongChecksum.DigestLength(session.TransferChecksum);
         private readonly List<string> _failedFiles = [];
@@ -432,6 +450,10 @@ public static class PushSession
                 return;
             }
 
+            // Push reports per file (one 0→100% step): the whole source is read and matched before
+            // any token goes out, so there is no intra-file byte cursor to animate (docs/progress-spec.md).
+            progress.BeginFile(entry.Wire.Name, length);
+
             WriteNdxAndFlags(writer, outbound, request.Ndx, request.Iflags);
 
             SumHeader head = request.SumHead!.Value;
@@ -458,6 +480,9 @@ public static class PushSession
             FilesSent++;
             LiteralBytes += match.LiteralBytes;
             MatchedBytes += match.MatchedBytes;
+
+            progress.Advance(length);
+            progress.EndFile();
         }
     }
 }
