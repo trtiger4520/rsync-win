@@ -128,7 +128,9 @@ public static class PullSession
             progressTotalBytes += entries[ndx].Size;
             progressTotalFiles++;
         }
-        progress.Begin(progressTotalBytes, progressTotalFiles);
+        // Scoped so End() runs on every exit (return or throw) — an aborted transfer must still
+        // terminate its in-place progress line instead of leaving the terminal mid-line.
+        using IDisposable progressScope = TransferProgressScope.Started(progress, progressTotalBytes, progressTotalFiles);
 
         var outbound = new NdxCodec();   // one encoder and one decoder per direction, whole session
         var inbound = new NdxCodec();
@@ -204,8 +206,6 @@ public static class PullSession
                 prune = LocalTreePruner.Prune(destinationDirectory, keep, serverArgs.Recurse, pathPolicy);
             }
         }
-
-        progress.End();
 
         return new Result(
             channel.Session,

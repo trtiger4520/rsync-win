@@ -95,6 +95,38 @@ public class ProgressRendererTests
         Assert.DoesNotContain('\r', writer.ToString());
     }
 
+    [Fact]
+    public void Writes_AreBestEffort_BrokenPipeNeverThrows()
+    {
+        // A broken stderr pipe must not abort the transfer — the sink swallows write failures.
+        var renderer = new ProgressRenderer(new ThrowingWriter(), animate: true, ProgressMode.PerFile, new FakeTime());
+
+        renderer.Begin(100, 1);
+        renderer.BeginFile("f", 100);
+        renderer.Advance(100);
+        renderer.EndFile();
+        renderer.End(); // no exception escapes any of these
+    }
+
+    [Fact]
+    public void PerFile_AbortMidFile_EndTerminatesDanglingLine()
+    {
+        var clock = new FakeTime();
+        var writer = new StringWriter();
+        var renderer = new ProgressRenderer(writer, animate: true, ProgressMode.PerFile, clock);
+
+        clock.NowNanos = 0;
+        renderer.Begin(100, 1);
+        renderer.BeginFile("f", 100);
+        clock.NowNanos = 200_000_000; // past the 100ms render interval, so an in-place line is drawn
+        renderer.Advance(50);
+        // No EndFile: the transfer aborts. End() (guaranteed via the engine's using-scope) must close
+        // the dangling in-place line with a newline instead of leaving the terminal mid-line.
+        renderer.End();
+
+        Assert.EndsWith("\n", writer.ToString());
+    }
+
     /// <summary>A hand-driven <see cref="TimeProvider"/>: 1 tick == 1 nanosecond, timestamp set by the
     /// test so rate/elapsed math is fully deterministic.</summary>
     private sealed class FakeTime : TimeProvider
@@ -102,5 +134,13 @@ public class ProgressRendererTests
         public long NowNanos;
         public override long GetTimestamp() => NowNanos;
         public override long TimestampFrequency => 1_000_000_000;
+    }
+
+    /// <summary>A writer whose every write throws, standing in for a broken stderr pipe.</summary>
+    private sealed class ThrowingWriter : TextWriter
+    {
+        public override System.Text.Encoding Encoding => System.Text.Encoding.UTF8;
+        public override void Write(char value) => throw new IOException("broken pipe");
+        public override void Write(string? value) => throw new IOException("broken pipe");
     }
 }

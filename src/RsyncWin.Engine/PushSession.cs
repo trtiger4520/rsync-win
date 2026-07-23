@@ -141,7 +141,9 @@ public static class PushSession
             progressTotalBytes += entry.Wire.Size;
             progressTotalFiles++;
         }
-        progress.Begin(progressTotalBytes, progressTotalFiles);
+        // Scoped so End() runs on every exit (return or throw, including the re-thrown
+        // ProtocolException below) — an aborted push must still terminate its in-place progress line.
+        using IDisposable progressScope = TransferProgressScope.Started(progress, progressTotalBytes, progressTotalFiles);
 
         var outbound = new NdxCodec(); // our own reply ndx encoder
         var inbound = new NdxCodec();  // the server-generator's request ndx decoder
@@ -187,8 +189,6 @@ public static class PushSession
                 .Select(m => m.Text.TrimEnd('\n')));
             throw new ProtocolException(ex.ExitCode, string.IsNullOrEmpty(serverText) ? ex.Message : serverText);
         }
-
-        progress.End();
 
         // MSG_DELETED payloads are the deleted path bytes, with a trailing NUL for directories
         // (ssh31-push-delete). Surface them for the CLI's "deleting <path>" report.

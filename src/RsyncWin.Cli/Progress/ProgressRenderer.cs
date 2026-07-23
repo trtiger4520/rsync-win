@@ -36,13 +36,14 @@ internal sealed class ProgressRenderer : ITransferProgressSink
     private long _beginTs;
     private long _cumulativeBytes;
 
-    private string _currentName = "";
     private long _currentSize;
     private long _currentBytes;
     private long _fileStartTs;
 
     private long _lastRenderTs;
     private int _lastLineWidth;
+    private bool _lineOpen;   // an in-place progress line is on screen without a terminating newline
+    private bool _broken;     // a write threw (e.g. broken stderr pipe): display is best-effort, so stop
 
     // (timestamp, cumulative-bytes) samples inside the trailing RateWindow — the instantaneous rate
     // is the slope across the window rather than the whole-transfer average.
@@ -58,8 +59,17 @@ internal sealed class ProgressRenderer : ITransferProgressSink
 
     public void Begin(long totalBytes, int totalFiles)
     {
+        // Reset all per-run state so a reused renderer instance can't carry stale counters or samples
+        // into the next transfer.
         _totalBytes = totalBytes;
         _totalFiles = totalFiles;
+        _filesTransferred = 0;
+        _cumulativeBytes = 0;
+        _currentBytes = 0;
+        _currentSize = 0;
+        _lastLineWidth = 0;
+        _lineOpen = false;
+        _samples.Clear();
         _beginTs = _time.GetTimestamp();
         _lastRenderTs = _beginTs;
         _samples.Add((_beginTs, 0));
@@ -67,7 +77,6 @@ internal sealed class ProgressRenderer : ITransferProgressSink
 
     public void BeginFile(string name, long size)
     {
-        _currentName = name;
         _currentSize = size;
         _currentBytes = 0;
         _fileStartTs = _time.GetTimestamp();
@@ -76,8 +85,8 @@ internal sealed class ProgressRenderer : ITransferProgressSink
         {
             // Explicit LF, never WriteLine: on Windows WriteLine emits CRLF, which would both diverge
             // from rsync's LF-terminated lines and inject a stray '\r' into the animated stream.
-            _out.Write(name);
-            _out.Write('\n');
+            WriteRaw(name);
+            WriteRaw('\n');
         }
     }
 
@@ -100,8 +109,9 @@ internal sealed class ProgressRenderer : ITransferProgressSink
             // Final line for this file: 100% + its own elapsed + the xfr/to-chk suffix, then a newline
             // so the next file starts fresh.
             Render(_time.GetTimestamp(), final: true);
-            _out.Write('\n');
+            WriteRaw('\n');
             _lastLineWidth = 0;
+            _lineOpen = false;
         }
     }
 
@@ -110,8 +120,16 @@ internal sealed class ProgressRenderer : ITransferProgressSink
         if (_mode == ProgressMode.WholeTransfer)
         {
             Render(_time.GetTimestamp(), final: true);
-            _out.Write('\n');
+            WriteRaw('\n');
             _lastLineWidth = 0;
+            _lineOpen = false;
+        }
+        else if (_lineOpen)
+        {
+            // Per-file mode aborted mid-file (EndFile never ran): terminate the dangling in-place
+            // line so the caller's summary doesn't print onto it.
+            WriteRaw('\n');
+            _lineOpen = false;
         }
     }
 
@@ -148,14 +166,34 @@ internal sealed class ProgressRenderer : ITransferProgressSink
         {
             // Overwrite in place; pad with spaces to clear any leftover from a previous longer line.
             string padded = line.Length < _lastLineWidth ? line.PadRight(_lastLineWidth) : line;
-            _out.Write('\r');
-            _out.Write(padded);
+            WriteRaw('\r');
+            WriteRaw(padded);
             _lastLineWidth = line.Length;
         }
         else
         {
-            _out.Write(line); // redirected + final: caller appends the newline
+            WriteRaw(line); // redirected + final: caller appends the newline
         }
+        _lineOpen = true;
+    }
+
+    // Display is best-effort: a broken stderr pipe (IOException) or a closed stream
+    // (ObjectDisposedException) must never abort the transfer, so writes are guarded and a first
+    // failure latches _broken to stop further attempts (see docs/progress-spec.md).
+    private void WriteRaw(string text)
+    {
+        if (_broken)
+            return;
+        try { _out.Write(text); }
+        catch (Exception e) when (e is IOException or ObjectDisposedException) { _broken = true; }
+    }
+
+    private void WriteRaw(char value)
+    {
+        if (_broken)
+            return;
+        try { _out.Write(value); }
+        catch (Exception e) when (e is IOException or ObjectDisposedException) { _broken = true; }
     }
 
     private double CurrentRate(long now)

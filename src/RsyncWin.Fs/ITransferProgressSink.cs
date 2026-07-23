@@ -33,6 +33,32 @@ public interface ITransferProgressSink
     void End();
 }
 
+/// <summary>Starts a progress run and guarantees <see cref="ITransferProgressSink.End"/> runs exactly
+/// once — on normal completion or on an exception — via <c>using</c>. Without this a transfer that
+/// throws after <see cref="ITransferProgressSink.Begin"/> would leave an in-place <c>\r</c> progress
+/// line on the terminal with no closing newline.</summary>
+public static class TransferProgressScope
+{
+    public static IDisposable Started(ITransferProgressSink sink, long totalBytes, int totalFiles)
+    {
+        sink.Begin(totalBytes, totalFiles);
+        return new Scope(sink);
+    }
+
+    private sealed class Scope(ITransferProgressSink sink) : IDisposable
+    {
+        private bool _ended;
+
+        public void Dispose()
+        {
+            if (_ended)
+                return;
+            _ended = true;
+            sink.End();
+        }
+    }
+}
+
 /// <summary>A sink that does nothing — the default when no progress flag is given, so callers never
 /// need to null-check.</summary>
 public sealed class NullProgressSink : ITransferProgressSink
