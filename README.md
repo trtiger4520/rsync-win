@@ -80,6 +80,7 @@ rsyncwin rsync://mirror.example.com/
 | `-s` | `--secluded-args` | Protect remote paths containing spaces / special characters       |  ✅  |  ✅  |
 | `-z` | `--compress`      | Compress the transferred token stream with zlibx                  |  ✅  |  ✅  |
 | `-e` | `--rsh`           | Choose the remote shell to use (defaults to the in-box ssh.exe)   |  ✅  |  ✅  |
+| `-h` | `--help`          | Show the built-in help (usage forms + all options) and exit 0     |  —  |  —  |
 
 Short flags can be combined: `-rtcz`, `-rtz --delete`, and so on. For each flag's key behavior, the
 rsync numeric exit-code table, passwords / credentials, and troubleshooting, see the
