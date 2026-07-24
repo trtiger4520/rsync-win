@@ -61,17 +61,8 @@ change:
 
 ## Commit conventions (release-affecting)
 
-Releases are automated by **semantic-release**: a push to `main` derives the next version from
-commit messages, tags it, and publishes the GitHub Release. So **every commit MUST follow
-[Conventional Commits](https://www.conventionalcommits.org/)** — a non-conforming message silently
-contributes nothing and can skip the release.
-
-- `fix:` → patch, `feat:` → minor, `feat!:` / `BREAKING CHANGE:` → major; `docs:`/`chore:`/`ci:`/
-  `test:`/`refactor:` → no version bump.
-- Phase breakpoints use `feat:` (or `fix:`) with the phase in the subject, e.g.
-  `feat: P13 --progress client-local display` — **not** the old `P<n> complete: …` form, which the
-  analyzer ignores.
-- Squash-merge PRs and make the **PR title** the Conventional Commit (it becomes the squashed message).
-- git tags are the single source of truth — never hand-bump `<Version>` in `Directory.Build.props`
-  or hand-create `v*` tags; CI owns both.
-- House style still applies: no trailing `。`, no Co-Authored-By footer.
+Releases are automated by **semantic-release**, so **every commit MUST follow
+[Conventional Commits](https://www.conventionalcommits.org/)** or the release is silently skipped.
+The full ruleset lives in one place — **[`CLAUDE.md` → "Commit conventions"](CLAUDE.md)** — read it
+before committing. Squash-merge PRs and make the PR title the Conventional Commit; a CI check
+(`pr-title-lint`) enforces this.

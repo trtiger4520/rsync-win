@@ -171,7 +171,8 @@ a non-conforming message silently contributes nothing and can skip the release e
   `feat: P13 --progress / --info=progress2 client-local display` — **not** the old `P13 complete: …`
   form, which the analyzer ignores.
 - **Squash-merge** PRs and make the **PR title** the Conventional Commit — that title becomes the
-  squashed commit message semantic-release reads.
+  squashed commit message semantic-release reads. The `pr-title-lint` workflow enforces this, so a
+  release-worthy change with a bad title fails the check instead of silently skipping the release.
 - git tags are the single source of truth for versions. **Never** hand-bump `<Version>` in
   `Directory.Build.props` or hand-create `v*` tags — CI owns both. (Local builds still read that
   `<Version>` as a default; CI overrides it with the computed version at publish time.)
