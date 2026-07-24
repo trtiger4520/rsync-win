@@ -18,11 +18,11 @@ internal static class VolumeBridge
     {
         string host = Join(HostRoot, relativePath);
         string vol = Join(VolumeRoot, relativePath);
-        // Reset the volume target, copy contents in, then open permissions so the non-root
-        // rsyncwin client (uid 1000) can write results under it.
+        // set -e so a failed cp aborts the whole script (rather than the chmod running anyway and
+        // masking a partial stage), then open permissions so the clients can overwrite results.
         return ExecShellAsync(
             container,
-            $"rm -rf {Quote(vol)} && mkdir -p {Quote(vol)} && cp -a {Quote(host + "/.")} {Quote(vol + "/")} 2>/dev/null; chmod -R 0777 {Quote(vol)}",
+            $"set -e; rm -rf {Quote(vol)}; mkdir -p {Quote(vol)}; cp -a {Quote(host + "/.")} {Quote(vol + "/")}; chmod -R 0777 {Quote(vol)}",
             cancellationToken);
     }
 
@@ -33,7 +33,7 @@ internal static class VolumeBridge
         string vol = Join(VolumeRoot, relativePath);
         return ExecShellAsync(
             container,
-            $"rm -rf {Quote(host)} && mkdir -p {Quote(host)} && cp -a {Quote(vol + "/.")} {Quote(host + "/")} 2>/dev/null; true",
+            $"set -e; rm -rf {Quote(host)}; mkdir -p {Quote(host)}; cp -a {Quote(vol + "/.")} {Quote(host + "/")}",
             cancellationToken);
     }
 
@@ -61,8 +61,13 @@ internal static class VolumeBridge
         info.ArgumentList.Add(script);
         using var process = new Process { StartInfo = info };
         process.Start();
-        string stderr = await process.StandardError.ReadToEndAsync(cancellationToken);
+        // Drain BOTH pipes concurrently before waiting: a full stdout buffer would otherwise block
+        // `docker exec` and hang the benchmark (same three-loop rule as the ssh transport).
+        Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync(cancellationToken);
+        Task<string> stderrTask = process.StandardError.ReadToEndAsync(cancellationToken);
         await process.WaitForExitAsync(cancellationToken);
+        string stderr = await stderrTask;
+        await stdoutTask;
         if (process.ExitCode != 0)
             throw new InvalidOperationException($"volume bridge step failed (exit {process.ExitCode}) in {container}: {stderr.Trim()}");
     }

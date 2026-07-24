@@ -205,9 +205,14 @@ internal static partial class BenchmarkRunner
         await DockerMetrics.RemoveContainerAsync(container, CancellationToken.None);
 
         // Bring the transfer result back onto the host bind mount so the existing manifest
-        // verification (which walks the host filesystem) can hash it. Untimed.
+        // verification (which walks the host filesystem) can hash it. Bounded by the same timeout
+        // as the transfer so a stalled bind-mount copy aborts the run instead of hanging it.
         if (bridged && exitCode == 0)
-            await VolumeBridge.PullAsync(bridgeContainer, destRelative, CancellationToken.None);
+        {
+            using var pullTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            pullTimeout.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+            await VolumeBridge.PullAsync(bridgeContainer, destRelative, pullTimeout.Token);
+        }
 
         string? manifest = null;
         if (exitCode == 0 && Directory.Exists(destination))
