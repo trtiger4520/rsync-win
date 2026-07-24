@@ -163,11 +163,23 @@ public static class LocalTreePruner
 
     /// <summary>
     /// True when <paramref name="fullPath"/> is the root itself or a genuine descendant of it.
-    /// <paramref name="root"/> is a <see cref="Path.GetFullPath(string)"/> result with any trailing
-    /// separator already stripped by <see cref="Prune(string, IReadOnlySet{string}, bool, LocalPathPolicy)"/>,
-    /// so a real child is <c>root + separator + name</c>: the char at <c>root.Length</c> must be the
-    /// separator. That second test is what rejects a same-prefix sibling — root <c>…\dest</c> vs
-    /// <c>…\destEVIL\x</c> — which shares the prefix but is a different directory.
+    /// <para>
+    /// <paramref name="root"/> is a <see cref="Path.GetFullPath(string)"/> result that
+    /// <see cref="Prune(string, IReadOnlySet{string}, bool, LocalPathPolicy)"/> ran through
+    /// <see cref="Path.TrimEndingDirectorySeparator(string)"/>. For an ordinary directory that
+    /// strips the trailing separator, so a real child is <c>root + separator + name</c> and the char
+    /// at <c>root.Length</c> must be the separator. That second test is what rejects a same-prefix
+    /// sibling — root <c>…\dest</c> vs <c>…\destEVIL\x</c> — which shares the prefix but is a
+    /// different directory.
+    /// </para>
+    /// <para>
+    /// Do NOT assume <paramref name="root"/> is always separator-trimmed:
+    /// <see cref="Path.TrimEndingDirectorySeparator(string)"/> keeps the trailing separator on a
+    /// volume root (<c>"C:\"</c>, <c>"/"</c>). For such a root every child then fails the
+    /// <c>root.Length</c> test (the char there is a name char, not a separator) and is reported
+    /// outside — the guard throws and prunes nothing. That is an intentional fail-safe: honoring
+    /// <c>--delete</c> against a bare volume root would let it prune the whole volume.
+    /// </para>
     /// </summary>
     internal static bool IsWithinRoot(string root, string fullPath, LocalPathPolicy policy)
         => fullPath.StartsWith(root, policy.PathComparison)
