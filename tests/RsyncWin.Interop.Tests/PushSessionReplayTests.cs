@@ -287,18 +287,15 @@ public class PushSessionReplayTests
             byte[] content = Capture("ssh31-push-delta", "result.bin"); // the clean 300000-byte source
             string path = Path.Combine(sourceDir, "b003_300k.bin");
             await File.WriteAllBytesAsync(path, content, cts.Token);
+            // Pin the mtime to the capture's own flist mtime (a whole second → ModifiedNanoseconds 0)
+            // so the enumerated flist is byte-identical to ssh31-push-delta's.
+            File.SetLastWriteTimeUtc(path, DateTimeOffset.FromUnixTimeSeconds(1623758400).UtcDateTime);
 
-            // Fields decoded straight from ssh31-push-delta's own flist (single, non-recursive path
-            // push — no root "." entry).
-            var entry = new EnumeratedEntry(
-                new FileEntry
-                {
-                    NameBytes = "b003_300k.bin"u8.ToArray(),
-                    Mode = 0x81A4, // regular file, 0644
-                    Size = 300000,
-                    ModifiedUnixSeconds = 1623758400, // 2021-06-15T12:00:00Z
-                },
-                path);
+            // Source the single entry through the real FileEnumerator (single-file source → one
+            // basename entry, no "." root) rather than a hand-built FileEntry: this makes the whole
+            // test an end-to-end FileEnumerator → FileListWriter byte-exact guard. RedoReplay below
+            // keeps the hand-built form as an independent control on the same wire shape.
+            var entry = FileEnumerator.Enumerate(path).Single();
 
             await using var transport = new ScriptedTransport(Capture("ssh31-push-delta", "s2c.bin"));
             PushSession.Result result = await PushSession.RunAsync(

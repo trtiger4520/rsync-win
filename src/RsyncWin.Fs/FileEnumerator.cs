@@ -36,13 +36,17 @@ public static class FileEnumerator
     private const int FileReadOnlyPermissions = 0x124;       // 0444
 
     /// <summary>
-    /// Enumerates <paramref name="rootPath"/> and its full subtree, sorted into flist order. The
-    /// root itself is returned first as the literal wire name "." (mirroring rsync's transfer-root
-    /// convention, flist-spec.md §3), followed by every descendant with a '/'-separated relative
-    /// name. Empty directories are included (they simply have no descendants). Symlinks and any
-    /// other reparse points are included with <see cref="FileEntry.Symlink"/> kind bits set — never
-    /// recursed into — so the caller can warn-and-skip them, mirroring the pull-side policy (see
+    /// Turns a source path into its flist-ordered entries. A <b>directory</b> root is returned with
+    /// the root itself first as the literal wire name "." (rsync's transfer-root convention,
+    /// flist-spec.md §3), followed by every descendant with a '/'-separated relative name; empty
+    /// directories are included (no descendants), and symlinks/other reparse points carry
+    /// <see cref="FileEntry.Symlink"/> kind bits and are never recursed into — so the caller can
+    /// warn-and-skip them, mirroring the pull-side policy (see
     /// <c>PullSession.WritePhase0RequestsAsync</c>: "symlinks/devices land in a later phase").
+    /// A <b>single-file</b> root (<c>rsync file host::mod/</c>) is instead returned as exactly one
+    /// entry named by its basename, with <b>no</b> "." transfer-root — the flist shape canonical
+    /// rsync sends for a file source arg (only a directory arg gets "." / <c>XMIT_TOP_DIR</c>;
+    /// pinned byte-exact by the ssh31-push-delta/redo vectors).
     /// </summary>
     public static IReadOnlyList<EnumeratedEntry> Enumerate(string rootPath)
     {
@@ -50,6 +54,17 @@ public static class FileEnumerator
         // "\\?\" prefixing) — the same assumption RsyncWin.Engine's PullSession already relies on
         // via plain Path.GetFullPath calls; there is no existing "\\?\" handling in this project.
         string root = Path.GetFullPath(rootPath);
+
+        // A single-file source is a valid rsync push: the flist is one basename entry with no "."
+        // transfer-root (only a *directory* source arg gets "." / XMIT_TOP_DIR — flist-spec.md §3).
+        // GetAttributes on a missing path throws the same IOException the old BuildEntry(".") did,
+        // so the CLI's file-io (exit 11) mapping is unchanged. A reparse point is not a directory
+        // here, so a symlink root falls through to the single-entry path and the caller skips it.
+        FileAttributes attributes = File.GetAttributes(root);
+        bool isDirectory = (attributes & FileAttributes.ReparsePoint) == 0
+            && (attributes & FileAttributes.Directory) != 0;
+        if (!isDirectory)
+            return [BuildEntry(root, Path.GetFileName(root))];
 
         var entries = new List<EnumeratedEntry> { BuildEntry(root, ".") };
         Walk(root, relativePrefix: "", entries);

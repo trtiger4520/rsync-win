@@ -36,6 +36,34 @@ public class FileEnumeratorTests
     }
 
     [Fact]
+    public void SingleFileSource_ReturnsOneBasenameEntry_NoDotRoot()
+    {
+        // "rsync file host::mod/" is a single-FILE source: the flist is one entry named by the file's
+        // basename with NO "." transfer-root (pinned byte-exact by ssh31-push-delta/redo). Contrast
+        // RootEntry_IsFirstAndNamedDot above, which pins the directory-source "." root.
+        string root = CreateTempDir();
+        try
+        {
+            string filePath = Path.Combine(root, "clip.mp4");
+            File.WriteAllText(filePath, "hello"); // 5 bytes
+
+            IReadOnlyList<EnumeratedEntry> entries = FileEnumerator.Enumerate(filePath);
+
+            EnumeratedEntry only = Assert.Single(entries);
+            Assert.Equal("clip.mp4", only.Wire.Name); // basename, never "."
+            Assert.False(only.Wire.IsDirectory);
+            Assert.True(only.Wire.IsRegularFile);
+            Assert.Equal(FileEntry.RegularFile | 0x1A4, only.Wire.Mode); // writable regular file, 0644
+            Assert.Equal(5, only.Wire.Size);
+            Assert.Equal(filePath, only.AbsolutePath);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    [Fact]
     public void NestedTree_MatchesHandComputedUtf8ByteSortOrder_IncludingNonAsciiAndAstralNames()
     {
         // Names chosen so UTF-16 ordinal compare and UTF-8 byte compare would disagree:
