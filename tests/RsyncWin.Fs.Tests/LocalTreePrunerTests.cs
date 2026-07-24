@@ -415,4 +415,55 @@ public class LocalTreePrunerTests
             Directory.Delete(root, recursive: true);
         }
     }
+
+    // Regression: a dest arg ending in a path separator (e.g. `rsyncwin -r --delete src/ /dest/`)
+    // used to crash --delete with an unhandled InvalidOperationException. Path.GetFullPath preserved
+    // the trailing separator, so the containment guard's "char after root is a separator" test read
+    // the first char of the child NAME instead and declared every child outside the root.
+    [Fact]
+    public void TrailingSeparatorDestRoot_DeletesExtraneousInRoot_KeepsKept()
+    {
+        string root = CreateTempDir();
+        try
+        {
+            File.WriteAllText(Path.Combine(root, "keep.txt"), "keep");
+            File.WriteAllText(Path.Combine(root, "extra.tmp"), "extra");
+
+            string destRootWithSeparator = root + Path.DirectorySeparatorChar;
+            var keep = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "keep.txt" };
+            PruneResult result = LocalTreePruner.Prune(destRootWithSeparator, keep, recurse: true);
+
+            Assert.True(File.Exists(Path.Combine(root, "keep.txt")));
+            Assert.False(File.Exists(Path.Combine(root, "extra.tmp")));
+            Assert.Equal(1, result.DeletedRegularFiles);
+            Assert.Equal(0, result.DeletedDirectories);
+            Assert.Contains(Path.Combine(root, "extra.tmp"), result.DeletedPaths);
+        }
+        finally
+        {
+            Directory.Delete(root, recursive: true);
+        }
+    }
+
+    // Guard preservation: dropping the trailing separator must not weaken the containment check.
+    // A genuine child stays inside the root; a same-prefix sibling ("…dest" vs "…destEVIL\x") that
+    // passes the raw StartsWith prefix test must still be refused by the separator-boundary test.
+    [Theory]
+    [InlineData(true)]  // Windows policy: OrdinalIgnoreCase comparison
+    [InlineData(false)] // Unix policy: Ordinal comparison
+    public void ContainmentGuard_RejectsSharedPrefixSibling_AllowsGenuineChild(bool windowsPolicy)
+    {
+        LocalPathPolicy policy = windowsPolicy ? LocalPathPolicy.Windows : LocalPathPolicy.Unix;
+        char sep = Path.DirectorySeparatorChar;
+        string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath("prune-guard-root"));
+
+        // The root itself and a genuine descendant are contained.
+        Assert.True(LocalTreePruner.IsWithinRoot(root, root, policy));
+        Assert.True(LocalTreePruner.IsWithinRoot(root, root + sep + "extra.tmp", policy));
+        Assert.True(LocalTreePruner.IsWithinRoot(root, root + sep + "dir" + sep + "inner.txt", policy));
+
+        // A sibling sharing the root's name prefix, and a wholly unrelated path, are refused.
+        Assert.False(LocalTreePruner.IsWithinRoot(root, root + "EVIL" + sep + "x", policy));
+        Assert.False(LocalTreePruner.IsWithinRoot(root, Path.GetFullPath("prune-guard-other") + sep + "x", policy));
+    }
 }
