@@ -4,3 +4,6 @@ obj/
 *.user
 TestResults/
 artifacts/
+node_modules/
+publish/
+rsyncwin-*-win-x64.zip
