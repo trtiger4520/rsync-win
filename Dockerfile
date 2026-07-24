@@ -1,12 +1,14 @@
 # Multi-mode publish of the RsyncWin CLI.
-#   PUBLISH_MODE=fdd  framework-dependent (needs .NET runtime) — DEFAULT
+#   PUBLISH_MODE=aot  Native AOT (self-contained native binary, no runtime; needs a musl base) — DEFAULT
 #   PUBLISH_MODE=r2r  ReadyToRun (IL pre-compiled, still needs the runtime)
-#   PUBLISH_MODE=aot  Native AOT (self-contained native binary, no runtime; needs a musl base)
-# FINAL_BASE must match the mode: dotnet/runtime for fdd/r2r; alpine (musl) for aot. Pass both
-# --build-arg together to switch, e.g.
-#   --build-arg PUBLISH_MODE=aot --build-arg FINAL_BASE=alpine:3.21
-ARG PUBLISH_MODE=fdd
-ARG FINAL_BASE=mcr.microsoft.com/dotnet/runtime:10.0-alpine@sha256:036b39f319141abc97fb32652ecfa97294e8108840f807999a0d467f4f1118ab
+#   PUBLISH_MODE=fdd  framework-dependent (needs .NET runtime)
+# AOT is the default because it matches stock rsync's startup/throughput and roughly halves peak
+# memory versus FDD (tools/RsyncWin.Perf compose benchmark). FINAL_BASE must match the mode:
+# alpine (musl) for aot; dotnet/runtime for fdd/r2r — pass both --build-arg together to switch.
+# For a faster local dev build: --build-arg PUBLISH_MODE=fdd \
+#   --build-arg FINAL_BASE=mcr.microsoft.com/dotnet/runtime:10.0-alpine
+ARG PUBLISH_MODE=aot
+ARG FINAL_BASE=alpine:3.21@sha256:48b0309ca019d89d40f670aa1bc06e426dc0931948452e8491e3d65087abc07d
 
 FROM mcr.microsoft.com/dotnet/sdk:10.0-alpine@sha256:940f919ae84dd92ccd4aab7686fa5b777870b006c9360351039e16bcaad73d89 AS build
 ARG PUBLISH_MODE
