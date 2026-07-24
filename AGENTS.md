@@ -59,5 +59,10 @@ change:
 - New standing rules or traps → `CLAUDE.md` (and mirror anything agent-relevant here only if it
   changes the reading order above).
 
-Commit messages: `P<n> complete: <capability>` style at phase breakpoints; no trailing `。`,
-no Co-Authored-By footer.
+## Commit conventions (release-affecting)
+
+Releases are automated by **semantic-release**, so **every commit MUST follow
+[Conventional Commits](https://www.conventionalcommits.org/)** or the release is silently skipped.
+The full ruleset lives in one place — **[`CLAUDE.md` → "Commit conventions"](CLAUDE.md)** — read it
+before committing. Squash-merge PRs and make the PR title the Conventional Commit; a CI check
+(`pr-title-lint`) enforces this.

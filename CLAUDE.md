@@ -157,3 +157,23 @@ Two tiers. Correctness is gated by the first, which needs no network:
 
 Phase gates are byte/hash equality or "re-run transfers nothing" — never "looks right". Every interop
 test needs a **hang-detection timeout**; phase-boundary bugs manifest as hangs, not failures.
+
+## Commit conventions (release-affecting)
+
+Releases are automated by **semantic-release** (`.releaserc.json`, `.github/workflows/release.yml`):
+a push to `main` computes the next version from commit messages, tags it, and publishes the GitHub
+Release with the win-x64 asset. So **every commit MUST follow [Conventional Commits](https://www.conventionalcommits.org/)** —
+a non-conforming message silently contributes nothing and can skip the release entirely.
+
+- `fix:` → patch, `feat:` → minor, `feat!:` or a `BREAKING CHANGE:` footer → major
+- `docs:` / `chore:` / `ci:` / `test:` / `refactor:` → no version bump
+- Phase-completion commits use `feat:` (or `fix:`) with the phase in the subject, e.g.
+  `feat: P13 --progress / --info=progress2 client-local display` — **not** the old `P13 complete: …`
+  form, which the analyzer ignores.
+- **Squash-merge** PRs and make the **PR title** the Conventional Commit — that title becomes the
+  squashed commit message semantic-release reads. The `pr-title-lint` workflow enforces this, so a
+  release-worthy change with a bad title fails the check instead of silently skipping the release.
+- git tags are the single source of truth for versions. **Never** hand-bump `<Version>` in
+  `Directory.Build.props` or hand-create `v*` tags — CI owns both. (Local builds still read that
+  `<Version>` as a default; CI overrides it with the computed version at publish time.)
+- House style still applies: no trailing `。`, no `Co-Authored-By` footer.
