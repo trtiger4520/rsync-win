@@ -253,6 +253,19 @@ fair/practical-track, or final-report checkboxes complete until the fair runner 
 five manifest-verified full iterations exist per cell, and Windows RSS/literal/matched fields are
 observed rather than zero/null.
 
+**Compose fair runner (`tools/RsyncWin.Perf/Invoke-ComposeBenchmark.ps1`).** Supersedes the
+`--mount`-string approach that blocked the fair track: daemon + root helper share a **named volume**
+(transfer stays VM-internal), clients launch via `docker compose run --name perf-client`, and
+`VolumeBridge` stages data host↔volume through the helper (untimed). This starts both clients,
+captures real cgroup `memory.peak`, and adds an **FDD/R2R/AOT publish-mode** comparison
+(`artifacts/perf/compose/comparison.md`). Smoke-validated: all six operations × three modes,
+manifest-verified; AOT ≈ stock rsync while FDD is ~15% slower and ~2× the peak memory — so the root
+`Dockerfile` now defaults to `PUBLISH_MODE=aot`. Still open before P11 completion: the full-profile
+five-iteration matrix (large-files for transfer-bound throughput; smoke is startup-dominated),
+cgroup `cpu.stat` sampling (misses at fast scale → host-CPU fallback), literal/matched, and the
+Windows practical track. Unrelated bug found: `rsyncwin --delete` crashes on a trailing-slash dest
+(`LocalTreePruner` containment guard) — routed to its own fix; the runner uses no-trailing-slash dests.
+
 ## P12 — Local-to-local direct copy
 
 Goal: `rsyncwin [flags] C:\src C:\dst` with both sides local, matching real rsync's user-visible

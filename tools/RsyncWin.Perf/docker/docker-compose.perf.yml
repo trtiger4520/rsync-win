@@ -1,0 +1,70 @@
+# Fair perf topology for RsyncWin vs stock rsync.
+#
+# The transfer working set lives in the named volume `work`, so it stays inside the Docker
+# Linux VM and never crosses a Windows bind mount (9p/virtiofs) that would distort throughput.
+# The host-side benchmark harness pushes generated data into the volume through the `helper`
+# container and pulls results back for manifest verification (both steps are untimed).
+#
+# The client under test is launched per iteration with `docker compose run --name perf-client`,
+# so it gets a fixed name the cgroup sampler can target. The daemon is pinned to a disjoint core
+# set so serving load never steals the client's measured CPUs.
+
+name: rsyncwin-perf
+
+networks:
+  perf:
+    driver: bridge
+
+volumes:
+  work:
+    driver: local
+
+services:
+  daemon:
+    image: ${STOCK_IMAGE:-rsyncwin-perf-rsync:3.4.3}
+    container_name: perf-daemon
+    networks: [perf]
+    volumes:
+      - work:/bench
+      - ./rsyncd.conf:/etc/rsyncd.conf:ro
+    entrypoint: ["rsync"]
+    command: ["--daemon", "--no-detach", "--config=/etc/rsyncd.conf"]
+    # Serving peer: pinned off the client cores, generous memory, never the bottleneck.
+    cpuset: "4-7"
+    mem_limit: 8g
+
+  # Root sidecar mounting BOTH the named volume and the host workdir. The host-side harness
+  # generates/verifies data under /host (a Windows bind mount); the bridge copies it in/out of
+  # the fast VM-internal volume with an in-container `cp` (avoids docker cp's C:\ ambiguity).
+  # Every copy here is untimed setup, so the slow /host bind mount never taints a measurement.
+  helper:
+    image: alpine:3.21
+    container_name: perf-helper
+    networks: [perf]
+    volumes:
+      - work:/bench
+      - ${WORK_HOST_DIR:?set WORK_HOST_DIR to the host benchmark workdir}:/host
+    command: ["sleep", "infinity"]
+
+  client-rsyncwin:
+    image: ${RSYNCWIN_IMAGE:?set RSYNCWIN_IMAGE to the rsyncwin-perf:<mode> image}
+    networks: [perf]
+    volumes:
+      - work:/bench
+    entrypoint: ["rsyncwin"]
+    # Run as root, matching the stock rsync client. Both clients then own their writes into the
+    # shared root-owned volume; without this the non-root image (uid 1000) gets EPERM setting
+    # attributes on the transfer-root dir it doesn't own. uid does not affect transfer throughput.
+    user: "0:0"
+    # Same 4-core / 8 GiB budget as the stock client; the two never run concurrently.
+    cpuset: "0-3"
+    mem_limit: 8g
+
+  client-rsync:
+    image: ${STOCK_IMAGE:-rsyncwin-perf-rsync:3.4.3}
+    networks: [perf]
+    volumes:
+      - work:/bench
+    entrypoint: ["rsync"]
+    cpuset: "0-3"
+    mem_limit: 8g

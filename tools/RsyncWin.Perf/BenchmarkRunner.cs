@@ -25,6 +25,7 @@ internal static partial class BenchmarkRunner
         string? directExecutable = options.GetOptional("--direct-executable");
         string? directEndpoint = options.GetOptional("--direct-endpoint");
         string container = options.Get("--container", string.Empty);
+        string bridgeContainer = options.Get("--bridge-container", string.Empty);
         int timeoutSeconds = options.GetInt("--timeout-seconds", profile == "smoke" ? 60 : 3600);
 
         if (warmups < 0 || iterations <= 0)
@@ -66,7 +67,7 @@ internal static partial class BenchmarkRunner
                                 ? DryIteration(scenario, dataset, client, operation, round, injectDryFailure)
                                 : await ExecuteAsync(
                                     scenario, dataset, client, operation, round, command, root, container,
-                                    timeoutSeconds, directExecutable, directEndpoint, cancellationToken));
+                                    bridgeContainer, timeoutSeconds, directExecutable, directEndpoint, cancellationToken));
                         }
                     }
                 }
@@ -140,6 +141,7 @@ internal static partial class BenchmarkRunner
         string commandTemplate,
         string root,
         string container,
+        string bridgeContainer,
         int timeoutSeconds,
         string? directExecutable,
         string? directEndpoint,
@@ -150,6 +152,18 @@ internal static partial class BenchmarkRunner
         using PreparedOperation prepared = await OperationPreparer.PrepareAsync(
             operation, source, destination, dataset, cancellationToken);
         await DockerMetrics.RemoveContainerAsync(container, cancellationToken);
+
+        // With a bridge container, the host-prepared source/destination are staged into the fast
+        // VM-internal volume before timing so the measured transfer never touches the host bind mount.
+        bool bridged = !string.IsNullOrWhiteSpace(bridgeContainer);
+        string destRelative = Path.Combine("results", client, scenario.Name);
+        if (bridged)
+        {
+            await VolumeBridge.PushAsync(bridgeContainer, scenario.Name, cancellationToken);
+            await VolumeBridge.PushAsync(bridgeContainer, destRelative, cancellationToken);
+            await VolumeBridge.EnsureResultsWritableAsync(bridgeContainer, client, cancellationToken);
+        }
+
         string flags = FlagsFor(client, operation);
         string command = commandTemplate
             .Replace("{flags}", flags, StringComparison.Ordinal)
@@ -189,6 +203,17 @@ internal static partial class BenchmarkRunner
         double cpuMilliseconds = cgroup.CpuTimeMilliseconds ?? hostCpu.TotalMilliseconds;
         long peakWorkingSetBytes = cgroup.PeakMemoryBytes ?? hostPeak;
         await DockerMetrics.RemoveContainerAsync(container, CancellationToken.None);
+
+        // Bring the transfer result back onto the host bind mount so the existing manifest
+        // verification (which walks the host filesystem) can hash it. Bounded by the same timeout
+        // as the transfer so a stalled bind-mount copy aborts the run instead of hanging it.
+        if (bridged && exitCode == 0)
+        {
+            using var pullTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            pullTimeout.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
+            await VolumeBridge.PullAsync(bridgeContainer, destRelative, pullTimeout.Token);
+        }
+
         string? manifest = null;
         if (exitCode == 0 && Directory.Exists(destination))
             manifest = (await ManifestBuilder.BuildAsync(scenario.Name, "result", destination, cancellationToken)).ContentManifestSha256;

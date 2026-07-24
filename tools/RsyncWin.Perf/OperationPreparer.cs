@@ -90,6 +90,14 @@ internal static class OperationPreparer
             if (edited == target)
                 break;
         }
+
+        // rsync's -r quick check compares size + mtime at 1-second granularity. The edits above
+        // change content but leave mtime within the same second as the freshly generated basis
+        // (and its seeded destination copy), so the receiver would skip them and the delta would
+        // transfer nothing. Push each edited file clearly ahead of the destination copy — which
+        // kept the original mtime — so the change is detected. Dispose() restores the original.
+        foreach (SourceEdit edit in edits)
+            File.SetLastWriteTimeUtc(edit.Path, edit.LastWriteUtc.AddHours(1));
     }
 
     private static void ApplyChecksumEdit(string source, List<SourceEdit> edits)

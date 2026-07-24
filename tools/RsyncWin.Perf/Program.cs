@@ -68,6 +68,8 @@ internal static class Program
               --warmups <n>                 Default: 1
               --iterations <n>              Default: 5
               --container <name>            Fixed client container name sampled every 100 ms
+              --bridge-container <name>     Helper container staging data host <-> named volume
+                                            (fair track: keeps the timed transfer VM-internal)
               --timeout-seconds <n>         Default: 60 smoke, 3600 full
               --keep-data                   Preserve generated scenario data
               --output <path>               Default: artifacts/perf/results
