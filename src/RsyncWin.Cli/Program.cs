@@ -170,11 +170,13 @@ static async Task<int> RunPushAsync(
 
     (string? user, string host, string remotePath) = CommandLineParser.SplitRemoteSpec(dest);
 
-    // TODO(P9): trailing-slash semantics on SOURCE ("localdir/" pushes contents, "localdir" would
-    // create the dir itself) are not modeled here — FileEnumerator always walks the root's contents
-    // and never wraps it in an extra directory level, mirroring the pull CLI's existing convention
-    // (dest is always treated as "receive contents into this directory", never checked for a
-    // trailing slash either). Revisit both sides together in P9 if divergent behavior is needed.
+    // A single-file SOURCE is handled: FileEnumerator emits one basename entry with no "." root, the
+    // flist shape canonical rsync sends for `rsync file host::mod/`. What remains as TODO(P9):
+    // trailing-slash semantics on a *directory* SOURCE ("localdir/" pushes contents, "localdir" would
+    // create the dir itself) are not modeled here — FileEnumerator always walks a directory root's
+    // contents and never wraps it in an extra directory level, mirroring the pull CLI's existing
+    // convention (dest is always treated as "receive contents into this directory", never checked for
+    // a trailing slash either). Revisit both sides together in P9 if divergent behavior is needed.
     IReadOnlyList<EnumeratedEntry> walked;
     try
     {

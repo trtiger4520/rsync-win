@@ -159,6 +159,14 @@ Scoped (with the user) to **everything except `-z`**, which moved to P10 (a comp
 a phase of its own). `--checksum` and `--delete` landed **pull-only** — the push variants need a
 FileListWriter F_SUM emission / a server-side del-stats read plus their own captures (P10).
 
+- [x] **Single-file push source (ssh + daemon)** — `rsync file host::mod/` / `[user@]host:file`.
+      `FileEnumerator.Enumerate` now emits one basename entry with **no** `.` transfer-root for a file
+      root (the flist shape canonical rsync sends for a file source arg; `flist-spec.md` §3). No new
+      capture needed: the wire shape was already pinned byte-exact by `ssh31-push-delta`/`ssh31-push-redo`,
+      and `PushSessionReplayTests.DeltaReplay` now sources its entry through `FileEnumerator.Enumerate`
+      as an end-to-end enumerator→wire guard; the failure it fixes is pinned by
+      `FileEnumeratorTests.SingleFileSource_ReturnsOneBasenameEntry_NoDotRoot`. The **directory**
+      trailing-slash / always-contents convention remains the open P9 item (see the `Program.cs` push TODO).
 - [x] **`--checksum` (`-c`), pull** — capture `ssh31-pull-checksum` pinned the flist `F_SUM`
       (16-byte xxh128, unseeded, regular-files-only, entry's last field; `flist-spec.md` §14) and the
       generator's decision iflags (`transfer-spec.md` §4b). `FileListReader` decodes F_SUM under
