@@ -35,21 +35,23 @@ jobs:
       - name: Hermetic test suite
         run: dotnet test --filter "Category!=Interop"
 
-  # Publish + tag only after the Windows gate is green. Runs on Linux because the
-  # packaging step needs `zip`, and `dotnet publish -r win-x64` cross-compiles fine.
-  release:
+  # Compute the next version WITHOUT publishing. The win-x64 AOT build needs the
+  # version up front — to embed it and to name the asset — but only semantic-release
+  # may decide it (git tags are the single source of truth). A dry-run reuses the
+  # exact same config + package-lock as the real release job, so the version it
+  # prints is guaranteed identical to what `release` will tag.
+  version:
     needs: test
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.semrel.outputs.version }}
+      published: ${{ steps.semrel.outputs.published }}
     steps:
       - uses: actions/checkout@v7
         with:
           # semantic-release analyses the whole history to find the last tag.
           fetch-depth: 0
           persist-credentials: false
-
-      - uses: actions/setup-dotnet@v6
-        with:
-          dotnet-version: 10.0.x
 
       - uses: actions/setup-node@v4
         with:
@@ -58,6 +60,77 @@ jobs:
 
       - name: Install release tooling
         run: npm ci
+
+      - name: Compute next version (dry-run)
+        id: semrel
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          npx semantic-release --dry-run 2>&1 | tee semrel.log
+          version="$(grep -oP 'The next release version is \K\S+' semrel.log | tail -n1 || true)"
+          if [ -n "$version" ]; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "version=$version" >> "$GITHUB_OUTPUT"
+            echo "Next release version: $version"
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+            echo "No release will be published for these commits."
+          fi
+
+  # Build the win-x64 Native AOT binary. Native AOT cannot cross-compile: producing
+  # a Windows PE native image needs the Windows linker, which only exists here — so
+  # the compile MUST run on windows-latest even though the release itself does not.
+  # The versioned zip is handed to the release job as a workflow artifact.
+  build-win:
+    needs: version
+    if: needs.version.outputs.published == 'true'
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Publish win-x64 Native AOT
+        run: dotnet publish src/RsyncWin.Cli -c Release -r win-x64 -p:PublishAot=true -p:Version=${{ needs.version.outputs.version }} -o publish/win-x64
+
+      - name: Package (zip the native exe only)
+        shell: pwsh
+        run: Compress-Archive -Path publish/win-x64/rsyncwin.exe -DestinationPath rsyncwin-v${{ needs.version.outputs.version }}-win-x64.zip
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: win-x64-aot
+          path: rsyncwin-v*-win-x64.zip
+          if-no-files-found: error
+
+  # Tag + publish on ubuntu-latest, as before. It only attaches the pre-built zip
+  # downloaded from build-win — no compile happens here (Linux cannot produce a
+  # win-x64 AOT binary), so semantic-release's config carries no build step.
+  release:
+    needs: [version, build-win]
+    if: needs.version.outputs.published == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # semantic-release analyses the whole history to find the last tag.
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Install release tooling
+        run: npm ci
+
+      - name: Download win-x64 AOT asset
+        uses: actions/download-artifact@v4
+        with:
+          name: win-x64-aot
 
       - name: Semantic release
         env:
