@@ -19,7 +19,26 @@ permissions:
   pull-requests: write
 
 jobs:
+  # Gate the release on the full hermetic suite. This is a Windows product:
+  # Fs/Cli/WindowsFs tests use cmd.exe, NTFS attributes, junctions and symlinks
+  # that only work on Windows, so the gate MUST run on windows-latest — the same
+  # `Category!=Interop` filter CLAUDE.md defines as the no-rsync hermetic suite.
+  test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Hermetic test suite
+        run: dotnet test --filter "Category!=Interop"
+
+  # Publish + tag only after the Windows gate is green. Runs on Linux because the
+  # packaging step needs `zip`, and `dotnet publish -r win-x64` cross-compiles fine.
   release:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -36,12 +55,6 @@ jobs:
         with:
           node-version: 20
           cache: "npm"
-
-      # This is the ONLY gate before an automatic publish, so run the whole
-      # hermetic suite (Protocol/Engine/Fs/Cli/Transport), not just the core.
-      # Interop is excluded — it needs Docker rsync peers this job doesn't have.
-      - name: Hermetic test suite
-        run: dotnet test --filter "Category!=Interop"
 
       - name: Install release tooling
         run: npm ci
