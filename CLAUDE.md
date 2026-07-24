@@ -162,7 +162,7 @@ test needs a **hang-detection timeout**; phase-boundary bugs manifest as hangs, 
 
 Releases are automated by **semantic-release** (`.releaserc.json`, `.github/workflows/release.yml`):
 a push to `main` computes the next version from commit messages, tags it, and publishes the GitHub
-Release with the win-x64 asset. So **every commit MUST follow [Conventional Commits](https://www.conventionalcommits.org/)** —
+Release with the win-x64 **Native AOT** asset. So **every commit MUST follow [Conventional Commits](https://www.conventionalcommits.org/)** —
 a non-conforming message silently contributes nothing and can skip the release entirely.
 
 - `fix:` → patch, `feat:` → minor, `feat!:` or a `BREAKING CHANGE:` footer → major
@@ -176,4 +176,10 @@ a non-conforming message silently contributes nothing and can skip the release e
 - git tags are the single source of truth for versions. **Never** hand-bump `<Version>` in
   `Directory.Build.props` or hand-create `v*` tags — CI owns both. (Local builds still read that
   `<Version>` as a default; CI overrides it with the computed version at publish time.)
+- **Trap — the win-x64 asset is Native AOT, which cannot cross-compile from Linux** (producing a
+  Windows PE native image needs the Windows linker). So the release is split across runners: a
+  `version` job (ubuntu) dry-runs semantic-release to fix the version, a `build-win` job
+  (**windows-latest**) compiles the AOT binary and zips it as a workflow artifact, and the `release`
+  job (ubuntu) tags + attaches it. Do **not** collapse this back into one ubuntu job — the AOT build
+  will silently fall back or fail. semantic-release still owns the version/tag/publish on ubuntu.
 - House style still applies: no trailing `。`, no `Co-Authored-By` footer.
