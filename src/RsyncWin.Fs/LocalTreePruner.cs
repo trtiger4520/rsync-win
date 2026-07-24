@@ -61,7 +61,10 @@ public static class LocalTreePruner
         bool recurse,
         LocalPathPolicy policy)
     {
-        string root = Path.GetFullPath(destRoot);
+        // Path.GetFullPath preserves a trailing separator, but the containment guard (see
+        // IsWithinRoot) needs root WITHOUT one so a child is root + separator + name. Trim it —
+        // TrimEndingDirectorySeparator leaves volume-root paths ("C:\", "/") intact.
+        string root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(destRoot));
         var keep = new HashSet<string>(keepRelativePaths, policy.PathComparer);
         var paths = new List<string>();
         var counters = new Counters();
@@ -143,11 +146,8 @@ public static class LocalTreePruner
         // Containment defense-in-depth: enumeration already guarantees this, but a mapper/walk bug
         // must never be the last line of defense (WindowsPathMapper's doc note applies here too).
         string fullPath = Path.GetFullPath(path);
-        if (!fullPath.StartsWith(root, policy.PathComparison)
-            || (fullPath.Length > root.Length && fullPath[root.Length] != Path.DirectorySeparatorChar))
-        {
+        if (!IsWithinRoot(root, fullPath, policy))
             throw new InvalidOperationException($"Refusing to delete '{fullPath}': outside destination root '{root}'");
-        }
 
         if ((attributes & FileAttributes.ReadOnly) != 0)
             File.SetAttributes(path, attributes & ~FileAttributes.ReadOnly);
@@ -160,4 +160,28 @@ public static class LocalTreePruner
         else
             File.Delete(path);
     }
+
+    /// <summary>
+    /// True when <paramref name="fullPath"/> is the root itself or a genuine descendant of it.
+    /// <para>
+    /// <paramref name="root"/> is a <see cref="Path.GetFullPath(string)"/> result that
+    /// <see cref="Prune(string, IReadOnlySet{string}, bool, LocalPathPolicy)"/> ran through
+    /// <see cref="Path.TrimEndingDirectorySeparator(string)"/>. For an ordinary directory that
+    /// strips the trailing separator, so a real child is <c>root + separator + name</c> and the char
+    /// at <c>root.Length</c> must be the separator. That second test is what rejects a same-prefix
+    /// sibling — root <c>…\dest</c> vs <c>…\destEVIL\x</c> — which shares the prefix but is a
+    /// different directory.
+    /// </para>
+    /// <para>
+    /// Do NOT assume <paramref name="root"/> is always separator-trimmed:
+    /// <see cref="Path.TrimEndingDirectorySeparator(string)"/> keeps the trailing separator on a
+    /// volume root (<c>"C:\"</c>, <c>"/"</c>). For such a root every child then fails the
+    /// <c>root.Length</c> test (the char there is a name char, not a separator) and is reported
+    /// outside — the guard throws and prunes nothing. That is an intentional fail-safe: honoring
+    /// <c>--delete</c> against a bare volume root would let it prune the whole volume.
+    /// </para>
+    /// </summary>
+    internal static bool IsWithinRoot(string root, string fullPath, LocalPathPolicy policy)
+        => fullPath.StartsWith(root, policy.PathComparison)
+            && (fullPath.Length == root.Length || fullPath[root.Length] == Path.DirectorySeparatorChar);
 }
