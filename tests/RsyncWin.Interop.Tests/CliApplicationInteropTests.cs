@@ -48,8 +48,10 @@ public sealed class CliApplicationInteropTests(
             string wrapper = await CliProcessRunner.CreateSshWrapperAsync(sshContainer, wrapperRoot);
             string remote = $"{sshContainer.User}@{sshContainer.Host}:{remoteRoot}/";
 
+            // -e/--rsh is now a word-split command (rsync-style), so quote the wrapper path: it keeps
+            // a wrapperRoot under a %TEMP% containing spaces from being split into program + bogus args.
             CliProcessResult first = await CliProcessRunner.RunAsync(
-                ["-acsz", "--delete", "-e", wrapper, remote, localRoot], CliTimeout);
+                ["-acsz", "--delete", "-e", $"\"{wrapper}\"", remote, localRoot], CliTimeout);
 
             AssertSuccessful(first);
             Assert.Contains("files transferred: 11", first.StandardError, StringComparison.Ordinal);
@@ -75,7 +77,7 @@ public sealed class CliApplicationInteropTests(
 
             CliProcessResult second = await CliProcessRunner.RunAsync(
                 ["--recursive", "--times", "--checksum", "--protect-args", "--compress", "--delete",
-                 "--rsh", wrapper, remote, localRoot], CliTimeout);
+                 "--rsh", $"\"{wrapper}\"", remote, localRoot], CliTimeout);
 
             AssertSuccessful(second);
             Assert.Contains("files transferred: 0, bytes: 0", second.StandardError, StringComparison.Ordinal);
@@ -109,7 +111,7 @@ public sealed class CliApplicationInteropTests(
             string remote = $"{sshContainer.User}@{sshContainer.Host}:{remoteRoot}/";
 
             CliProcessResult first = await CliProcessRunner.RunAsync(
-                ["-rtcz", "--protect-args", "--delete", "-e", wrapper, localRoot, remote], CliTimeout);
+                ["-rtcz", "--protect-args", "--delete", "-e", $"\"{wrapper}\"", localRoot, remote], CliTimeout);
 
             AssertSuccessful(first);
             Assert.Contains("files sent: 6", first.StandardError, StringComparison.Ordinal);
@@ -117,7 +119,7 @@ public sealed class CliApplicationInteropTests(
             AssertManifestsEqual(await LocalManifestAsync(localRoot), await RemoteManifestAsync(sshContainer, remoteRoot));
 
             CliProcessResult second = await CliProcessRunner.RunAsync(
-                ["-rtczs", "--delete", "--rsh", wrapper, localRoot, remote], CliTimeout);
+                ["-rtczs", "--delete", "--rsh", $"\"{wrapper}\"", localRoot, remote], CliTimeout);
 
             AssertSuccessful(second);
             Assert.Contains("files sent: 0, literal bytes: 0", second.StandardError, StringComparison.Ordinal);

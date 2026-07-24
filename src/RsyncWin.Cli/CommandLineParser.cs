@@ -1,3 +1,4 @@
+using System.Text;
 using RsyncWin.Transport;
 
 namespace RsyncWin.Cli;
@@ -280,6 +281,59 @@ internal static class CommandLineParser
         string? user = atIndex >= 0 ? hostPart[..atIndex] : null;
         string host = atIndex >= 0 ? hostPart[(atIndex + 1)..] : hostPart;
         return (user, host, remotePath);
+    }
+
+    /// <summary>
+    /// Splits a remote-shell command (from <c>-e</c>/<c>--rsh</c> or <c>RSYNC_RSH</c>) into its words
+    /// the way rsync does: the first word is the program to launch, the rest are arguments inserted
+    /// before the host. Whitespace separates words; single or double quotes group a word (and are
+    /// stripped) so a path containing spaces survives; a backslash is a literal character, NOT an
+    /// escape — Windows paths are full of them and treating <c>\</c> as an escape would corrupt every
+    /// path. An all-whitespace or empty command yields an empty list (the caller falls back to the
+    /// in-box ssh.exe).
+    /// </summary>
+    internal static IReadOnlyList<string> SplitRsh(string command)
+    {
+        var tokens = new List<string>();
+        var current = new StringBuilder();
+        bool inToken = false;
+        char quote = '\0'; // '\0' = outside quotes; otherwise the active quote character
+
+        foreach (char c in command)
+        {
+            if (quote != '\0')
+            {
+                if (c == quote)
+                    quote = '\0'; // closing quote
+                else
+                    current.Append(c);
+                inToken = true; // even "" is a token
+            }
+            else if (c is '"' or '\'')
+            {
+                quote = c;
+                inToken = true;
+            }
+            else if (c is ' ' or '\t')
+            {
+                if (inToken)
+                {
+                    tokens.Add(current.ToString());
+                    current.Clear();
+                    inToken = false;
+                }
+            }
+            else
+            {
+                current.Append(c);
+                inToken = true;
+            }
+        }
+
+        if (inToken)
+            tokens.Add(current.ToString());
+
+        return tokens;
     }
 
     /// <summary>Composes the module-relative server path argument (docs/daemon-spec.md §3): the module

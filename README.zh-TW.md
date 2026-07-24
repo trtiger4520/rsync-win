@@ -75,7 +75,7 @@ rsyncwin rsync://mirror.example.com/
 |      | `--delete`        | 刪除目的端多出來、來源端沒有的檔案                |  ✅  |  ✅  |
 | `-s` | `--secluded-args` | 保護含空白/特殊字元的遠端路徑                     |  ✅  |  ✅  |
 | `-z` | `--compress`      | 用 zlibx 壓縮傳輸的 token 串流                    |  ✅  |  ✅  |
-| `-e` | `--rsh`           | 指定要用的遠端 shell（預設內建 ssh.exe）          |  ✅  |  ✅  |
+| `-e` | `--rsh`           | 遠端 shell 命令，可帶參數（例 `-e "ssh -p 2222"`）|  ✅  |  ✅  |
 | `-h` | `--help`          | 顯示內建使用說明（用法與所有選項）並以 0 離開     |  —  |  —  |
 
 短旗標可以合併：`-rtcz`、`-rtz --delete` 等。各旗標的重點行為、rsync 數值離開碼對照表、

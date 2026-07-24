@@ -11,9 +11,10 @@ namespace RsyncWin.Interop.Tests;
 /// filesystem, byte-identical (SHA-256 per file against hashes computed inside the container),
 /// with the remote side exiting 0.
 /// </summary>
-// P5 CLI end-to-end test skipped: the CLI's -e/--rsh takes a bare executable path with no way to
-// express the container's ephemeral port/key/known-hosts options, and growing the flag surface just
-// for a test is not warranted. Revisit when the CLI grows ssh-option passthrough (P9 flag surface).
+// No CLI end-to-end pull test here: -e/--rsh now accepts a full remote-shell command (it can carry
+// the container's port/key/known-hosts options directly), and the CLI-over-ssh round trip — including
+// that passthrough via an ssh.cmd wrapper — is already covered by CliApplicationInteropTests. This
+// class stays focused on the engine-level pull milestone.
 [Trait("Category", "Interop")]
 public sealed class SshPullInteropTests(SshRsyncContainer container) : IClassFixture<SshRsyncContainer>
 {

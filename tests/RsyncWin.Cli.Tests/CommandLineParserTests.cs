@@ -347,4 +347,54 @@ public class CommandLineParserTests
         Assert.NotNull(failure);
         Assert.Contains("-P", failure!.Message);
     }
+
+    [Theory]
+    [InlineData("ssh -p 2222", new[] { "ssh", "-p", "2222" })]
+    [InlineData("ssh", new[] { "ssh" })]
+    // A bare Windows path: backslashes are literal (NOT escapes) and there is no whitespace, so it
+    // stays a single token — identical to the pre-passthrough behavior for a plain executable path.
+    [InlineData(@"C:\Windows\System32\OpenSSH\ssh.exe", new[] { @"C:\Windows\System32\OpenSSH\ssh.exe" })]
+    // Runs of whitespace collapse; leading/trailing whitespace is ignored.
+    [InlineData("  ssh   -p   2222  ", new[] { "ssh", "-p", "2222" })]
+    // A single-quoted path with spaces survives as one token; \P etc. would be corrupted if '\' escaped.
+    [InlineData(@"'C:\Program Files\Git\usr\bin\ssh.exe' -p 2222", new[] { @"C:\Program Files\Git\usr\bin\ssh.exe", "-p", "2222" })]
+    // Same, double-quoted.
+    [InlineData("\"C:\\Program Files\\ssh.exe\" -i key", new[] { @"C:\Program Files\ssh.exe", "-i", "key" })]
+    public void SplitRsh_QuoteAware_SplitsProgramAndArgs(string command, string[] expected)
+    {
+        Assert.Equal(expected, CommandLineParser.SplitRsh(command));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("\t")]
+    public void SplitRsh_EmptyOrWhitespace_ReturnsEmpty(string command)
+    {
+        Assert.Empty(CommandLineParser.SplitRsh(command));
+    }
+
+    [Theory]
+    [InlineData("\"\"")]
+    [InlineData("''")]
+    public void SplitRsh_QuotedEmpty_YieldsOneEmptyToken(string command)
+    {
+        // A quoted-empty command tokenizes to a single empty word (not "no tokens"). ResolveRsh
+        // relies on this: an empty program word means "no rsh", so it falls back to the in-box ssh.exe
+        // instead of trying to launch "".
+        Assert.Equal(new[] { "" }, CommandLineParser.SplitRsh(command));
+    }
+
+    [Fact]
+    public void Parse_RshWithArgs_KeepsRawCommandUnsplit()
+    {
+        // The split happens at ssh-launch time, not parse time: RshOverride carries the raw command
+        // string verbatim so a spaces-containing -e value is a single positional-free argument.
+        (ParsedCommand? command, ParseFailure? failure) =
+            CommandLineParser.Parse(["-e", "ssh -p 2222", "host:/src", @"D:\backup"]);
+
+        Assert.Null(failure);
+        Assert.Equal(ParsedAction.SshPull, command!.Action);
+        Assert.Equal("ssh -p 2222", command.RshOverride);
+    }
 }
