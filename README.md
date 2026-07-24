@@ -79,7 +79,7 @@ rsyncwin rsync://mirror.example.com/
 |      | `--delete`        | Delete files on the destination that the source no longer has     |  ✅  |  ✅  |
 | `-s` | `--secluded-args` | Protect remote paths containing spaces / special characters       |  ✅  |  ✅  |
 | `-z` | `--compress`      | Compress the transferred token stream with zlibx                  |  ✅  |  ✅  |
-| `-e` | `--rsh`           | Choose the remote shell to use (defaults to the in-box ssh.exe)   |  ✅  |  ✅  |
+| `-e` | `--rsh`           | Remote-shell command, args allowed e.g. `-e "ssh -p 2222"`        |  ✅  |  ✅  |
 | `-h` | `--help`          | Show the built-in help (usage forms + all options) and exit 0     |  —  |  —  |
 
 Short flags can be combined: `-rtcz`, `-rtz --delete`, and so on. For each flag's key behavior, the

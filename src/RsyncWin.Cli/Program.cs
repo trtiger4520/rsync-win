@@ -70,12 +70,14 @@ static void PrintHelp(TextWriter writer)
     writer.WriteLine("  -z, --compress         compress file data during transfer (zlibx)");
     writer.WriteLine("      --progress         show a per-file progress bar (bytes, %, rate, ETA)");
     writer.WriteLine("      --info=progress2   show a single progress line for the whole transfer");
-    writer.WriteLine(@"  -e, --rsh PATH         use PATH as the ssh executable (default: C:\Windows\System32\OpenSSH\ssh.exe)");
+    writer.WriteLine(@"  -e, --rsh COMMAND      remote-shell command; the first word is the program, the rest are");
+    writer.WriteLine(@"                         args, e.g. -e ""ssh -p 2222"" (default: C:\Windows\System32\OpenSSH\ssh.exe)");
     writer.WriteLine("  -h, --help             show this help and exit");
     writer.WriteLine();
     writer.WriteLine("Notes:");
     writer.WriteLine("  \"[user@]host::module[/path]\" is accepted anywhere \"rsync://host/module[/path]\" is (port always 873).");
     writer.WriteLine("  Daemon auth password is read from the RSYNC_PASSWORD environment variable.");
+    writer.WriteLine("  When -e/--rsh is omitted, the RSYNC_RSH environment variable is used as the remote-shell command.");
 }
 
 /// <summary>Builds the progress sink for a run: a real renderer when <c>--progress</c> or
@@ -574,7 +576,15 @@ static async Task<(DaemonTcpTransport? Transport, DaemonPreambleResult? Preamble
 static (OpenSshProcessTransport? Transport, int ErrorExitCode) StartSsh(
     string? user, string host, IReadOnlyList<string> serverArgv, string? rshOverride)
 {
+    // -e/--rsh (or RSYNC_RSH) is a full remote-shell command, rsync-style: the first word is the
+    // program, the rest are arguments inserted BEFORE the host (e.g. -e "ssh -p 2222" launches
+    // "ssh -p 2222 -l user host ..."). Empty/unset falls back to the in-box ssh.exe with no args.
+    IReadOnlyList<string> rsh = ResolveRsh(rshOverride);
+    string sshExe = rsh.Count > 0 ? rsh[0] : OpenSshProcessTransport.DefaultSshExePath;
+
     var sshArgs = new List<string>();
+    for (int i = 1; i < rsh.Count; i++)
+        sshArgs.Add(rsh[i]);
     if (user is not null)
     {
         sshArgs.Add("-l");
@@ -583,7 +593,6 @@ static (OpenSshProcessTransport? Transport, int ErrorExitCode) StartSsh(
     sshArgs.Add(host);
     sshArgs.AddRange(serverArgv);
 
-    string sshExe = rshOverride ?? OpenSshProcessTransport.DefaultSshExePath;
     try
     {
         return (OpenSshProcessTransport.Start(sshExe, sshArgs), (int)RsyncExitCode.Ok);
@@ -593,6 +602,25 @@ static (OpenSshProcessTransport? Transport, int ErrorExitCode) StartSsh(
         Console.Error.WriteLine($"rsyncwin: failed to start \"{sshExe}\": {ex.Message}");
         return (null, (int)RsyncExitCode.StartClientServerError);
     }
+}
+
+/// <summary>Resolves the remote-shell command into words: an explicit <c>-e</c>/<c>--rsh</c> value wins,
+/// otherwise the <c>RSYNC_RSH</c> environment variable (rsync's default source), otherwise empty — the
+/// caller then falls back to the in-box ssh.exe. The chosen command is word-split the same rsync way
+/// (<see cref="CommandLineParser.SplitRsh"/>), so RSYNC_RSH may carry arguments too. Env I/O lives here,
+/// not in the pure parser.</summary>
+static IReadOnlyList<string> ResolveRsh(string? rshOverride)
+{
+    string? command = !string.IsNullOrWhiteSpace(rshOverride)
+        ? rshOverride
+        : Environment.GetEnvironmentVariable("RSYNC_RSH");
+    if (string.IsNullOrWhiteSpace(command))
+        return [];
+
+    IReadOnlyList<string> words = CommandLineParser.SplitRsh(command);
+    // A quoted-empty command (e.g. -e "\"\"" or RSYNC_RSH="''") tokenizes to a single empty word:
+    // there is no program to launch, so fall back to the in-box ssh.exe rather than trying to start "".
+    return words.Count > 0 && words[0].Length > 0 ? words : [];
 }
 
 /// <summary>
