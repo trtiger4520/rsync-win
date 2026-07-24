@@ -1,3 +1,4 @@
+using System.Buffers;
 using RsyncWin.Protocol.FileList;
 
 namespace RsyncWin.Fs;
@@ -70,9 +71,10 @@ public static class LocalSyncEngine
 
         if (!sourceIsDirectory)
         {
-            progress.Begin(RegularFileLengthOrZero(fullSource), 1);
-            SyncSingleFileSource(fullSource, fullDest, destEndsWithSeparator, options.Checksum, state, progress);
-            progress.End();
+            // Scoped like the wire paths so End() runs even if the copy throws — otherwise an
+            // animated in-place progress line would be left dangling on the terminal.
+            using (TransferProgressScope.Started(progress, RegularFileLengthOrZero(fullSource), 1))
+                SyncSingleFileSource(fullSource, fullDest, destEndsWithSeparator, options.Checksum, state, progress);
             return state.ToResult();
         }
 
@@ -104,7 +106,9 @@ public static class LocalSyncEngine
             progressTotalBytes += entry.Wire.Size;
             progressTotalFiles++;
         }
-        progress.Begin(progressTotalBytes, progressTotalFiles);
+        // Scoped so End() runs on every exit (return or throw) — an aborted copy pass must still
+        // terminate its in-place progress line instead of leaving the terminal mid-line.
+        using IDisposable progressScope = TransferProgressScope.Started(progress, progressTotalBytes, progressTotalFiles);
 
         // Copy pass in flist order (parents sort before their children, so directories exist by the
         // time their contents arrive). Directory mtimes are restored afterwards, deepest first — the
@@ -195,7 +199,6 @@ public static class LocalSyncEngine
             }
         }
 
-        progress.End();
         return state.ToResult();
     }
 
@@ -406,12 +409,21 @@ public static class LocalSyncEngine
     /// otherwise.</summary>
     private static void CopyReporting(Stream source, Stream destination, ITransferProgressSink progress)
     {
-        byte[] buffer = new byte[128 * 1024];
-        int read;
-        while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
+        // Pooled rather than `new byte[128*1024]`: a 128 KB buffer exceeds the 85 KB LOH threshold, so
+        // a fresh one per copied file would churn the Large Object Heap across a many-file sync.
+        byte[] buffer = ArrayPool<byte>.Shared.Rent(128 * 1024);
+        try
         {
-            destination.Write(buffer, 0, read);
-            progress.Advance(read);
+            int read;
+            while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
+            {
+                destination.Write(buffer, 0, read);
+                progress.Advance(read);
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
         }
     }
 
