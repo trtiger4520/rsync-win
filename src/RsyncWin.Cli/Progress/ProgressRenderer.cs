@@ -1,4 +1,5 @@
 using System.Globalization;
+using System.Text;
 using RsyncWin.Fs;
 
 namespace RsyncWin.Cli;
@@ -46,8 +47,10 @@ internal sealed class ProgressRenderer : ITransferProgressSink
     private bool _broken;     // a write threw (e.g. broken stderr pipe): display is best-effort, so stop
 
     // (timestamp, cumulative-bytes) samples inside the trailing RateWindow — the instantaneous rate
-    // is the slope across the window rather than the whole-transfer average.
-    private readonly List<(long Ts, long Bytes)> _samples = [];
+    // is the slope across the window rather than the whole-transfer average. A Queue (not a List) so
+    // evicting the oldest sample is O(1) Dequeue rather than an O(n) RemoveAt(0) shift on the
+    // per-Advance hot path (Advance fires once per ~32 KB reconstructed).
+    private readonly Queue<(long Ts, long Bytes)> _samples = new();
 
     public ProgressRenderer(TextWriter output, bool animate, ProgressMode mode, TimeProvider? timeProvider = null)
     {
@@ -69,10 +72,11 @@ internal sealed class ProgressRenderer : ITransferProgressSink
         _currentSize = 0;
         _lastLineWidth = 0;
         _lineOpen = false;
+        _broken = false;
         _samples.Clear();
         _beginTs = _time.GetTimestamp();
         _lastRenderTs = _beginTs;
-        _samples.Add((_beginTs, 0));
+        _samples.Enqueue((_beginTs, 0));
     }
 
     public void BeginFile(string name, long size)
@@ -135,19 +139,21 @@ internal sealed class ProgressRenderer : ITransferProgressSink
 
     private void RecordSample(long now)
     {
-        _samples.Add((now, _cumulativeBytes));
+        _samples.Enqueue((now, _cumulativeBytes));
         // Drop samples that have fallen out of the trailing window, but always keep at least two so a
         // rate is still computable.
-        while (_samples.Count > 2 && _time.GetElapsedTime(_samples[0].Ts, now) > RateWindow)
-            _samples.RemoveAt(0);
+        while (_samples.Count > 2 && _time.GetElapsedTime(_samples.Peek().Ts, now) > RateWindow)
+            _samples.Dequeue();
     }
 
     private void Render(long now, bool final)
     {
+        // Re-arm the throttle even when we skip drawing, so redirected output doesn't call Render on
+        // every subsequent Advance (the interval never elapses again if _lastRenderTs never moves).
+        _lastRenderTs = now;
+
         if (!_animate && !final)
             return; // redirected output: only the completed line is emitted
-
-        _lastRenderTs = now;
 
         (long bytes, long size) = _mode == ProgressMode.WholeTransfer
             ? (_cumulativeBytes, _totalBytes)
@@ -177,15 +183,16 @@ internal sealed class ProgressRenderer : ITransferProgressSink
         _lineOpen = true;
     }
 
-    // Display is best-effort: a broken stderr pipe (IOException) or a closed stream
-    // (ObjectDisposedException) must never abort the transfer, so writes are guarded and a first
+    // Display is best-effort: a broken stderr pipe (IOException), a closed stream
+    // (ObjectDisposedException), or an un-encodable filename under a strict console encoding
+    // (EncoderFallbackException) must never abort the transfer, so writes are guarded and a first
     // failure latches _broken to stop further attempts (see docs/progress-spec.md).
     private void WriteRaw(string text)
     {
         if (_broken)
             return;
         try { _out.Write(text); }
-        catch (Exception e) when (e is IOException or ObjectDisposedException) { _broken = true; }
+        catch (Exception e) when (e is IOException or ObjectDisposedException or EncoderFallbackException) { _broken = true; }
     }
 
     private void WriteRaw(char value)
@@ -193,23 +200,30 @@ internal sealed class ProgressRenderer : ITransferProgressSink
         if (_broken)
             return;
         try { _out.Write(value); }
-        catch (Exception e) when (e is IOException or ObjectDisposedException) { _broken = true; }
+        catch (Exception e) when (e is IOException or ObjectDisposedException or EncoderFallbackException) { _broken = true; }
     }
 
     private double CurrentRate(long now)
     {
         if (_samples.Count < 2)
             return 0;
-        (long ts0, long bytes0) = _samples[0];
+        (long ts0, long bytes0) = _samples.Peek();
         double seconds = _time.GetElapsedTime(ts0, now).TotalSeconds;
         return seconds > 0 ? (_cumulativeBytes - bytes0) / seconds : 0;
     }
+
+    // A tiny rate against a huge remainder (e.g. a multi-hundred-GB transfer resuming after a stall)
+    // can push the ETA past TimeSpan.MaxValue, and TimeSpan.FromSeconds THROWS on overflow — which,
+    // on the synchronous Advance path, would abort an otherwise-healthy transfer. Cap it: any ETA
+    // beyond this is meaningless as a display value anyway. ~3170 years, safely inside TimeSpan range.
+    private const double MaxEtaSeconds = 1e11;
 
     private static TimeSpan EstimateRemaining(long bytes, long size, double rate)
     {
         if (rate <= 0 || size <= 0 || bytes >= size)
             return TimeSpan.Zero;
-        return TimeSpan.FromSeconds((size - bytes) / rate);
+        double seconds = (size - bytes) / rate;
+        return TimeSpan.FromSeconds(Math.Min(seconds, MaxEtaSeconds));
     }
 
     // ---- pure formatting helpers (unit-tested directly) --------------------------------------
@@ -230,18 +244,19 @@ internal sealed class ProgressRenderer : ITransferProgressSink
     /// <summary>Byte count grouped with invariant thousands separators, e.g. <c>1,234,567</c>.</summary>
     internal static string FormatBytes(long bytes) => bytes.ToString("N0", CultureInfo.InvariantCulture);
 
+    private static readonly string[] RateUnits = ["B/s", "kB/s", "MB/s", "GB/s", "TB/s"];
+
     /// <summary>Transfer rate as <c>{value:F2}{unit}</c> with a 1024-scaled unit, e.g. <c>47.68MB/s</c>.</summary>
     internal static string FormatRate(double bytesPerSecond)
     {
-        string[] units = ["B/s", "kB/s", "MB/s", "GB/s", "TB/s"];
         double value = bytesPerSecond < 0 ? 0 : bytesPerSecond;
         int unit = 0;
-        while (value >= 1024 && unit < units.Length - 1)
+        while (value >= 1024 && unit < RateUnits.Length - 1)
         {
             value /= 1024;
             unit++;
         }
-        return string.Create(CultureInfo.InvariantCulture, $"{value:F2}{units[unit]}");
+        return string.Create(CultureInfo.InvariantCulture, $"{value:F2}{RateUnits[unit]}");
     }
 
     /// <summary>Elapsed/remaining time as <c>H:MM:SS</c> (hours un-padded), e.g. <c>0:00:02</c>,

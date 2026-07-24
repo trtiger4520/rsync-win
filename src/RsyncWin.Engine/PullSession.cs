@@ -732,6 +732,10 @@ public static class PullSession
         // with itself, so no synchronization is needed beyond the channel handoff below.
         private readonly HashSet<int> _expected = new();
 
+        // Cached once: `progress.Advance` as a method group allocates a fresh Action<long> each time,
+        // and it is passed to FileReceiver on every received file.
+        private readonly Action<long> _advance = progress.Advance;
+
         public int TransferredFiles { get; private set; }
         public long TransferredBytes { get; private set; }
         public long MatchedBytes { get; private set; }
@@ -839,7 +843,7 @@ public static class PullSession
                             cancellationToken,
                             basis,
                             channel.Session.Compression,
-                            progress.Advance);
+                            _advance);
                     }
                 }
                 finally
