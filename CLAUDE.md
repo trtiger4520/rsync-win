@@ -170,9 +170,19 @@ a non-conforming message silently contributes nothing and can skip the release e
 - Phase-completion commits use `feat:` (or `fix:`) with the phase in the subject, e.g.
   `feat: P13 --progress / --info=progress2 client-local display` — **not** the old `P13 complete: …`
   form, which the analyzer ignores.
-- **Squash-merge** PRs and make the **PR title** the Conventional Commit — that title becomes the
-  squashed commit message semantic-release reads. The `pr-title-lint` workflow enforces this, so a
-  release-worthy change with a bad title fails the check instead of silently skipping the release.
+- **Branch model — batch on `dev`, release from `main`.** Only `main` is in `.releaserc.json`'s
+  `branches` and `release.yml`'s trigger, so **`dev` never releases**: feature work lands on `dev`
+  and accumulates, and a `dev → main` merge cuts exactly one release for the whole batch (instead of
+  one release per change).
+- **Feature PR → `dev`: squash-merge**, PR title = the Conventional Commit — that title becomes the
+  one squashed commit semantic-release will later read. The `pr-title-lint` workflow (runs on every
+  PR, including ones targeting `dev`) enforces this, so a release-worthy change with a bad title fails
+  the check instead of silently skipping the release.
+- **`dev → main`: MERGE COMMIT, never squash.** A merge commit preserves each Conventional Commit
+  from `dev` so semantic-release aggregates the whole batch — takes the **highest** bump present
+  (`feat:` → minor, `feat!:`/`BREAKING CHANGE:` → major) and lists every `fix:`/`feat:` in the notes.
+  Squashing this hop collapses the batch to the single PR-title line, so the version bump and Release
+  Notes are computed from that one line and every per-commit detail is lost.
 - git tags are the single source of truth for versions. **Never** hand-bump `<Version>` in
   `Directory.Build.props` or hand-create `v*` tags — CI owns both. (Local builds still read that
   `<Version>` as a default; CI overrides it with the computed version at publish time.)
