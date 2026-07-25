@@ -171,7 +171,8 @@ a non-conforming message silently contributes nothing and can skip the release e
   `feat: P13 --progress / --info=progress2 client-local display` — **not** the old `P13 complete: …`
   form, which the analyzer ignores.
 - **Branch model — batch on `dev`, release from `main`.** Only `main` is in `.releaserc.json`'s
-  `branches` and `release.yml`'s trigger, so **`dev` never releases**: feature work lands on `dev`
+  `branches` array and `.github/workflows/release.yml`'s `on.push.branches`, so **`dev` never
+  releases**: feature work lands on `dev`
   and accumulates, and a `dev → main` merge cuts exactly one release for the whole batch (instead of
   one release per change).
 - **Feature PR → `dev`: squash-merge**, PR title = the Conventional Commit — that title becomes the
