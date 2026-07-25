@@ -52,7 +52,7 @@ public static class ZlibxTokenCodec
     /// <summary>
     /// Inflates one literal run: the concatenated DEFLATED_DATA payloads, whose stripped
     /// <c>00 00 ff ff</c> sync-flush tail we re-append so the raw-deflate stream is flushable in full.
-    /// Only correct for a STANDALONE run (no cross-run back-reference) — use <see cref="InflateRuns"/>
+    /// Only correct for a STANDALONE run (no cross-run back-reference) — use <see cref="RunInflater"/>
     /// for a real transfer, where rsync's continuous deflate window means a later run may reference an
     /// earlier one.
     /// </summary>
