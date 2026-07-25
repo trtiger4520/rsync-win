@@ -61,8 +61,10 @@ internal static class CommandLineParser
         RshOverride: null, Source: null, Dest: null, Endpoint: null);
 
     // -V/--version behaves exactly like help: returned immediately, so whichever of the two appears
-    // first in the argument list wins and no other flag is even classified. Note the case — lowercase
-    // -v stays unsupported, reserved for rsync's --verbose.
+    // first in the argument list wins. Flags scanned before it (including earlier letters in the same
+    // bundle, e.g. "-rV") still set their locals, but those values are discarded — this instance
+    // carries all-false flags and only Action is ever read. Note the case — lowercase -v stays
+    // unsupported, reserved for rsync's --verbose.
     private static readonly ParsedCommand VersionCommand = HelpCommand with { Action = ParsedAction.ShowVersion };
 
     public static (ParsedCommand? Command, ParseFailure? Failure) Parse(string[] args)
