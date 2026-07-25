@@ -133,6 +133,11 @@ public class ZlibxCodecTests
             deflate.Write(run);
             deflate.Flush();
             int flushed = (int)sink.Length;
+            // The stripped tail below assumes Flush() emits at least the 4-byte Z_SYNC_FLUSH marker
+            // (the same BCL behavior ZlibxTokenCodec.DeflateRun relies on) — say so, rather than
+            // failing later as an opaque negative-length slice.
+            Assert.True(flushed - consumed >= 4,
+                $"Flush() must emit at least the 4-byte sync marker, got {flushed - consumed} bytes");
             payloads.Add(sink.GetBuffer().AsSpan(consumed, flushed - consumed - 4).ToArray());
             consumed = flushed;
         }

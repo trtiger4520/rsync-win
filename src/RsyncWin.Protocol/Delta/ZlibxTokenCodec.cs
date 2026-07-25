@@ -87,8 +87,17 @@ public static class ZlibxTokenCodec
 
         public RunInflater() => _inflater = new DeflateStream(_feed, CompressionMode.Decompress);
 
-        /// <summary>Queues one DEFLATED_DATA payload as inflater input.</summary>
-        public void Feed(ReadOnlySpan<byte> compressed) => _feed.Feed(compressed);
+        /// <summary>
+        /// Queues one DEFLATED_DATA payload as inflater input. The array is enqueued as-is, NOT
+        /// copied — ownership passes to the inflater until it has been drained, so the caller must
+        /// not reuse or mutate it. That is free for the receiver, which hands over the fresh array
+        /// <c>ReadDataExactlyAsync</c> just allocated, and avoids a copy per chunk on the hot path.
+        /// </summary>
+        public void Feed(byte[] compressed) => _feed.Feed(compressed);
+
+        /// <summary>Queues a payload the caller only has as a slice — copied, unlike the array
+        /// overload.</summary>
+        public void Feed(ReadOnlySpan<byte> compressed) => _feed.Feed(compressed.ToArray());
 
         /// <summary>Closes the current literal run by queueing the sync marker the wire stripped.
         /// Only call this for a run that actually had payload: two adjacent match tokens carry no run,
@@ -112,10 +121,11 @@ public static class ZlibxTokenCodec
             private readonly Queue<byte[]> _chunks = new();
             private int _offset;
 
-            public void Feed(ReadOnlySpan<byte> data)
+            /// <summary>Takes ownership of <paramref name="data"/> — never copied, never mutated.</summary>
+            public void Feed(byte[] data)
             {
                 if (data.Length != 0)
-                    _chunks.Enqueue(data.ToArray());
+                    _chunks.Enqueue(data);
             }
 
             public override int Read(byte[] buffer, int offset, int count) =>
