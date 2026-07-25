@@ -79,6 +79,41 @@ public class CommandLineParserTests
         Assert.Equal(ParsedAction.ShowHelp, command!.Action);
     }
 
+    [Theory]
+    [InlineData("-V")]
+    [InlineData("--version")]
+    public void Parse_VersionFlag_ReturnsShowVersion(string flag)
+    {
+        (ParsedCommand? command, ParseFailure? failure) = CommandLineParser.Parse([flag]);
+
+        Assert.Null(failure);
+        Assert.Equal(ParsedAction.ShowVersion, command!.Action);
+    }
+
+    [Theory]
+    [InlineData("-V", "host:/src", @"D:\backup")] // version alongside a valid transfer
+    [InlineData("-rV", "host:/src", @"D:\backup")] // bundled with other short flags
+    [InlineData("--version", "--foo")] // version wins even over an otherwise-unsupported option
+    public void Parse_VersionFlag_WinsOverOtherArguments(params string[] args)
+    {
+        (ParsedCommand? command, ParseFailure? failure) = CommandLineParser.Parse(args);
+
+        Assert.Null(failure);
+        Assert.Equal(ParsedAction.ShowVersion, command!.Action);
+    }
+
+    /// <summary>Lowercase -v is rsync's --verbose, which this client does not implement — it must keep
+    /// failing loudly rather than quietly becoming an alias for --version.</summary>
+    [Fact]
+    public void Parse_LowercaseVerboseFlag_StillReturnsSyntaxError()
+    {
+        (ParsedCommand? command, ParseFailure? failure) = CommandLineParser.Parse(["-v", "host:/src", @"D:\backup"]);
+
+        Assert.Null(command);
+        Assert.NotNull(failure);
+        Assert.Contains("-v", failure!.Message);
+    }
+
     [Fact]
     public void Parse_UnknownLongFlag_ReturnsSyntaxError()
     {

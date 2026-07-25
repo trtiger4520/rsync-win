@@ -3,6 +3,7 @@ using System.Net.Sockets;
 using RsyncWin.Cli;
 using RsyncWin.Engine;
 using RsyncWin.Fs;
+using RsyncWin.Protocol;
 using RsyncWin.Protocol.Delta;
 using RsyncWin.Protocol.Mux;
 using RsyncWin.Protocol.Session;
@@ -29,6 +30,7 @@ static async Task<int> RunAsync(string[] args)
     return cmd.Action switch
     {
         ParsedAction.ShowHelp => RunHelp(),
+        ParsedAction.ShowVersion => RunVersion(),
         ParsedAction.DaemonList => await RunDaemonListAsync(cmd.Endpoint!),
         ParsedAction.SshPull => await RunPullAsync(cmd.Source!, cmd.Dest!, cmd.Recurse, cmd.Archive, cmd.Checksum, cmd.Delete, cmd.Secluded, cmd.Compress, cmd.RshOverride, cmd.Progress, cmd.InfoProgress2),
         ParsedAction.SshPush => await RunPushAsync(cmd.Source!, cmd.Dest!, cmd.Recurse, cmd.Archive, cmd.Checksum, cmd.Delete, cmd.Secluded, cmd.Compress, cmd.RshOverride, cmd.Progress, cmd.InfoProgress2),
@@ -44,6 +46,27 @@ static async Task<int> RunAsync(string[] args)
 static int RunHelp()
 {
     PrintHelp(Console.Out);
+    return (int)RsyncExitCode.Ok;
+}
+
+/// <summary>-V/--version: version, negotiable protocol range, and what this build can actually do —
+/// stdout, exit 0. Client-local display only; it exchanges zero wire bytes and is never forwarded to
+/// the server (ServerArgvBuilder untouched), like --progress.</summary>
+static int RunVersion()
+{
+    Console.WriteLine($"rsyncwin  version {VersionInfo.Product}  protocol version {RsyncConstants.ProtocolVersion}");
+    Console.WriteLine("Copyright (c) 2026 trtiger4520.  MIT licensed.");
+    Console.WriteLine("Web site: https://github.com/trtiger4520/rsync-win");
+    Console.WriteLine();
+    Console.WriteLine("Capabilities:");
+    Console.WriteLine("    transports: ssh (OpenSSH ssh.exe), rsync daemon (rsync://), local copy");
+    Console.WriteLine($"    protocol: {RsyncConstants.ProtocolVersion}, negotiates down to {RsyncConstants.MinProtocolVersion}");
+    // The offer is the honest answer to "what checksum will a session actually use": below protocol
+    // 30 there is no negotiation at all and md4 is implied.
+    Console.WriteLine($"    checksums: offers \"{ChecksumNegotiator.DefaultOffer}\" (md4 below protocol 30)");
+    Console.WriteLine("    compression: zlibx");
+    Console.WriteLine("    not supported: -a extras on push (owner/group/links/devices), zstd/lz4/old-zlib,");
+    Console.WriteLine("                   files larger than 2 GiB, --partial/-P, --delete-after, --stats");
     return (int)RsyncExitCode.Ok;
 }
 
@@ -73,6 +96,7 @@ static void PrintHelp(TextWriter writer)
     writer.WriteLine(@"  -e, --rsh COMMAND      remote-shell command; the first word is the program, the rest are");
     writer.WriteLine(@"                         args, e.g. -e ""ssh -p 2222"" (default: C:\Windows\System32\OpenSSH\ssh.exe)");
     writer.WriteLine("  -h, --help             show this help and exit");
+    writer.WriteLine("  -V, --version          show version and capabilities and exit (uppercase V)");
     writer.WriteLine();
     writer.WriteLine("Notes:");
     writer.WriteLine("  \"[user@]host::module[/path]\" is accepted anywhere \"rsync://host/module[/path]\" is (port always 873).");

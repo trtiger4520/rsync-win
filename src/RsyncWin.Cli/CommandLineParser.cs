@@ -13,6 +13,7 @@ internal enum ParsedAction
     DaemonList,
     LocalCopy,
     ShowHelp,
+    ShowVersion,
 }
 
 /// <summary>A parsed daemon endpoint from either "rsync://[user@]host[:port]/module[/path]" or
@@ -59,6 +60,11 @@ internal static class CommandLineParser
         Secluded: false, Compress: false, Progress: false, InfoProgress2: false,
         RshOverride: null, Source: null, Dest: null, Endpoint: null);
 
+    // -V/--version behaves exactly like help: returned immediately, so whichever of the two appears
+    // first in the argument list wins and no other flag is even classified. Note the case — lowercase
+    // -v stays unsupported, reserved for rsync's --verbose.
+    private static readonly ParsedCommand VersionCommand = HelpCommand with { Action = ParsedAction.ShowVersion };
+
     public static (ParsedCommand? Command, ParseFailure? Failure) Parse(string[] args)
     {
         string? rshOverride = null;
@@ -104,6 +110,10 @@ internal static class CommandLineParser
             else if (arg == "--help")
             {
                 return (HelpCommand, null);
+            }
+            else if (arg == "--version")
+            {
+                return (VersionCommand, null);
             }
             else if (arg is "-s" or "--secluded-args" or "--protect-args")
             {
@@ -154,6 +164,7 @@ internal static class CommandLineParser
                         case 's': secluded = true; break;
                         case 'z': compress = true; break;
                         case 'h': return (HelpCommand, null); // -h is help; --human-readable is not implemented
+                        case 'V': return (VersionCommand, null); // uppercase only — -v stays free for --verbose
 
                         default:
                             return (null, new ParseFailure($"rsyncwin: unsupported option -{flag}"));
