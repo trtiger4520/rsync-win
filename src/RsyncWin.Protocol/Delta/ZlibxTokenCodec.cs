@@ -28,7 +28,7 @@ namespace RsyncWin.Protocol.Delta;
 /// The deflate WINDOW persists across runs — rsync's sender keeps one deflate stream for the whole
 /// file and only excludes MATCHED blocks from the window, so a later literal run can back-reference an
 /// earlier one (verified against real rsync, <c>ssh31-pull-z-crossrun</c>). Therefore the receiver
-/// must inflate the run stream CONTINUOUSLY (<see cref="InflateRuns"/>), never run-by-run — a per-run
+/// must inflate the run stream CONTINUOUSLY (<see cref="RunInflater"/>), never run-by-run — a per-run
 /// inflate throws on a cross-run reference. The encoder side compresses each run independently (so it
 /// never emits a cross-run reference of its own), which any receiver decodes fine; the asymmetry is
 /// safe because a continuous inflater handles both continuous and independent segments.
@@ -59,27 +59,95 @@ public static class ZlibxTokenCodec
     public static byte[] InflateRun(ReadOnlySpan<byte> compressedRun) => InflateStream(compressedRun);
 
     /// <summary>
-    /// Inflates the first <paramref name="count"/> literal runs as ONE continuous raw-deflate stream —
-    /// each run's payload followed by the re-appended <c>00 00 ff ff</c> sync-flush marker. This is
-    /// load-bearing: rsync's zlibx sender keeps the deflate window across runs (only MATCHED blocks
-    /// are excluded from the window), so a later literal run can back-reference an earlier one. A
-    /// per-run inflate throws `InvalidDataException` on such a reference (verified against real rsync,
-    /// `ssh31-pull-z-crossrun`) — runs MUST be inflated continuously. Returns all decompressed literal
-    /// bytes of runs <c>[0, count)</c> concatenated.
+    /// The receiver's continuous raw-inflater for one file's literal-run stream: DEFLATED_DATA
+    /// payloads are <see cref="Feed"/>-ed as they come off the wire and inflated bytes are pulled out
+    /// with <see cref="Read"/>, so neither the compressed runs nor the decompressed literals are ever
+    /// fully buffered. One instance per file — the deflate window must persist across runs (see the
+    /// class remarks).
+    /// <para>
+    /// <b>The run boundary is a drain, not a length.</b> A run's decompressed length is not on the
+    /// wire and cannot be derived, so the only way to know a run ended is to feed its
+    /// <c>00 00 ff ff</c> sync marker (<see cref="EndRun"/>) and inflate until the inflater asks for
+    /// input it does not have — signalled by <see cref="Read"/> returning 0.
+    /// </para>
+    /// <para>
+    /// <b>Load-bearing runtime behavior:</b> that a <see cref="DeflateStream"/> whose source returns 0
+    /// mid-stream returns 0 and stays RESUMABLE (window intact) when more input arrives afterwards is
+    /// observed BCL behavior, not a documented contract — <c>ZlibxCodecTests.RunInflater_*</c> pins it
+    /// so a runtime upgrade that changed it (e.g. to throw on truncated input) fails loudly instead of
+    /// silently mis-decoding. Fallback if that ever happens: a fresh inflater per run, prefixed with a
+    /// hand-built stored block carrying the previous 32 KiB of output as the window (measured working,
+    /// ~2x slower, depends only on the DEFLATE format).
+    /// </para>
     /// </summary>
-    public static byte[] InflateRuns(IReadOnlyList<byte[]> runs, int count)
+    public sealed class RunInflater : IDisposable
     {
-        using var input = new MemoryStream();
-        for (int i = 0; i < count; i++)
+        private readonly FeedStream _feed = new();
+        private readonly DeflateStream _inflater;
+
+        public RunInflater() => _inflater = new DeflateStream(_feed, CompressionMode.Decompress);
+
+        /// <summary>Queues one DEFLATED_DATA payload as inflater input.</summary>
+        public void Feed(ReadOnlySpan<byte> compressed) => _feed.Feed(compressed);
+
+        /// <summary>Closes the current literal run by queueing the sync marker the wire stripped.
+        /// Only call this for a run that actually had payload: two adjacent match tokens carry no run,
+        /// and injecting a marker the sender never emitted would insert a block into the stream.</summary>
+        public void EndRun() => _feed.Feed(SyncFlushTail);
+
+        /// <summary>
+        /// Inflates as much as the queued input allows into <paramref name="destination"/>, returning
+        /// 0 once the inflater needs input that has not been fed. Synchronous by design: the source is
+        /// an in-memory queue, never the wire, so this performs no I/O and is safe to call from the
+        /// async receive loop.
+        /// </summary>
+        public int Read(Span<byte> destination) => _inflater.Read(destination);
+
+        public void Dispose() => _inflater.Dispose();
+
+        /// <summary>Hands the inflater exactly what has been fed so far and returns 0 when empty —
+        /// which is what makes "the inflater wants more input" observable as <c>Read</c> returning 0.</summary>
+        private sealed class FeedStream : Stream
         {
-            input.Write(runs[i]);
-            input.Write(SyncFlushTail);
+            private readonly Queue<byte[]> _chunks = new();
+            private int _offset;
+
+            public void Feed(ReadOnlySpan<byte> data)
+            {
+                if (data.Length != 0)
+                    _chunks.Enqueue(data.ToArray());
+            }
+
+            public override int Read(byte[] buffer, int offset, int count) =>
+                Read(buffer.AsSpan(offset, count));
+
+            public override int Read(Span<byte> buffer)
+            {
+                if (_chunks.Count == 0 || buffer.Length == 0)
+                    return 0;
+
+                byte[] head = _chunks.Peek();
+                int length = Math.Min(buffer.Length, head.Length - _offset);
+                head.AsSpan(_offset, length).CopyTo(buffer);
+                _offset += length;
+                if (_offset == head.Length)
+                {
+                    _chunks.Dequeue();
+                    _offset = 0;
+                }
+                return length;
+            }
+
+            public override bool CanRead => true;
+            public override bool CanSeek => false;
+            public override bool CanWrite => false;
+            public override long Length => throw new NotSupportedException();
+            public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+            public override void Flush() { }
+            public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+            public override void SetLength(long value) => throw new NotSupportedException();
+            public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
         }
-        input.Position = 0;
-        using var deflate = new DeflateStream(input, CompressionMode.Decompress);
-        using var output = new MemoryStream();
-        deflate.CopyTo(output);
-        return output.ToArray();
     }
 
     private static byte[] InflateStream(ReadOnlySpan<byte> compressed)
