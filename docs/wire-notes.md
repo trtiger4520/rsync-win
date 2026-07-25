@@ -165,6 +165,12 @@ to the per-file retry-then-exit-23 lane; wire mtimes clamp to the settable Win32
   full transfer (no matches) the two are byte-identical (demuxed). Token grammar + framing:
   `docs/transfer-spec.md` §2a. `DeflateStream.Flush()` emits exactly the `Z_SYNC_FLUSH` marker
   (`… 00 00 ff ff`) rsync strips on the wire — verified, which is what makes the encoder side work.
+- **Trap — the decoder rides one undocumented BCL behavior**: a run's decompressed length is not on
+  the wire, so the receiver finds a run's end by feeding its sync marker and reading until
+  `DeflateStream.Read` returns 0, then keeps feeding the SAME stream for the next run (the window must
+  survive). Both halves — "returns 0 instead of throwing on exhausted input" and "resumes with the
+  window intact" — are observed, not contracted. `ZlibxCodecTests.RunInflater_*` exists solely to make
+  a runtime change fail loudly there; the format-only fallback is in `docs/transfer-spec.md` §2a.
 - Both directions live-gated (`SshP10InteropTests`): a real rsync `-z` pull reconstructs
   byte-identically (decoder), and a real rsync receiver reconstructs our `-z` push byte-identically +
   re-push transfers nothing (encoder). Byte-exact SEND replay is impossible (deflate output is

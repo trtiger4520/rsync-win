@@ -142,6 +142,12 @@ resend or an exit-12 desync**.
   only an `Action<long>` byte-advance delegate; the `ITransferProgressSink` seam and `ProgressRenderer`
   live outside `RsyncWin.Protocol`. Format pinned in `docs/progress-spec.md`. `-P` (= `--partial
   --progress`) stays rejected — `--partial`'s keep-partial-on-failure is an unimplemented receiver change.
+- **`-V` / `--version` is client-local display too** — same zero-wire-bytes rule as `--progress`
+  (no capture/interop gate). The version string comes from `AssemblyInformationalVersionAttribute`
+  via `VersionInfo` (never a hand-written constant — git tags own versions), and the protocol
+  numbers come from `RsyncConstants`, never literals. **Lowercase `-v` is deliberately still
+  rejected**: it is rsync's `--verbose`, and silently aliasing it to `--version` would surprise
+  anyone typing rsync habits. Only uppercase `-V` shows the version.
 
 ## Testing
 

@@ -74,10 +74,18 @@ output" primitive (`Z_INSERT_ONLY`, which the BCL lacks). Pinned by `ssh31-pull-
 **The deflate window persists across runs** (only matched blocks are excluded), so a later literal run
 CAN back-reference an earlier one — capture-pinned by `ssh31-pull-z-crossrun` (two runs sharing a
 256-byte marker, matched blocks between, close in deflate-input distance). The receiver must therefore
-inflate the whole run stream CONTINUOUSLY, not run-by-run: `FileReceiver` buffers every run's
-compressed payload and the interleaving op list, then inflates prefix `[0, k)` of the run stream to
-bound each run's slice of the fully-inflated literal buffer (`ZlibxTokenCodec.InflateRuns`). A per-run
-inflate throws `InvalidDataException` on a cross-run reference (an early bug the reviewer caught). The
+inflate the whole run stream CONTINUOUSLY, not run-by-run: one `ZlibxTokenCodec.RunInflater` lives for
+the whole file, is fed each DEFLATED_DATA payload as it arrives, and its output goes straight to the
+destination. A per-run inflate throws `InvalidDataException` on a cross-run reference (an early bug the
+reviewer caught).
+
+**A run's decompressed length is not on the wire and cannot be derived** — the only way to find a run's
+end is to feed its stripped `00 00 ff ff` marker and inflate until the inflater wants input it has not
+been given (`DeflateStream.Read` returning 0). That the BCL returns 0 there rather than throwing, and
+RESUMES with the window intact once more input arrives, is observed behavior and not a documented
+contract; `ZlibxCodecTests.RunInflater_*` pins both halves so a runtime change fails loudly. Fallback
+if it ever does: a fresh inflater per run prefixed with a hand-built stored block carrying the previous
+32 KiB of output as the window (measured working, ~2x slower, depends only on the DEFLATE format). The
 encoder (`MatchSearcher`) compresses each run independently (never emitting a cross-run reference of
 its own — a continuous inflater decodes that fine) and drops a match whose block delta exceeds the
 6-bit relative range back to literal rather than emitting the un-pinned TOKEN_LONG.

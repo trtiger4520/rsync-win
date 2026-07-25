@@ -111,40 +111,61 @@ public static class FileReceiver
         return (written, matched);
     }
 
-    /// <summary>One decoded zlibx operation, in output order: either a literal run (an index into the
-    /// buffered <c>runs</c> list) or a matched-block reference (start block + run length).</summary>
-    private readonly record struct ZlibxOp(bool IsLiteral, int RunIndex, int BlockStart, int BlockCount);
-
     /// <summary>
     /// Decodes the zlibx (<c>-z</c>) compressed token stream (docs/transfer-spec.md §2a). Because
     /// rsync's zlibx sender keeps ONE deflate window across all literal runs (only matched blocks are
     /// excluded), a later run can back-reference an earlier one (verified against real rsync,
-    /// <c>ssh31-pull-z-crossrun</c>) — so runs cannot be inflated in isolation. We buffer every run's
-    /// compressed payload and the interleaving operation list, then inflate the run stream continuously
-    /// (<see cref="ZlibxTokenCodec.InflateRuns"/>): a prefix inflate of the first <c>k</c> runs gives
-    /// the cumulative literal length ending run <c>k-1</c>, so each run's slice of the fully-inflated
-    /// literal buffer is exactly bounded. Matched blocks are then copied from the basis in output order.
+    /// <c>ssh31-pull-z-crossrun</c>) — so runs cannot be inflated in isolation. A single
+    /// <see cref="ZlibxTokenCodec.RunInflater"/> lives for the whole file and is fed each
+    /// DEFLATED_DATA payload as it arrives; inflated bytes go straight to
+    /// <paramref name="destination"/>, so memory stays bounded by the drain buffer no matter how large
+    /// the file or its literal runs are.
+    /// <para>
+    /// Ordering: a run's tail bytes only inflate once its sync marker is fed, so a pending run is
+    /// closed and fully drained BEFORE the match token that ended it copies its blocks — literals and
+    /// matched blocks reach the destination in wire order.
+    /// </para>
     /// </summary>
     private static async ValueTask<(long Written, long Matched)> ReceiveZlibxTokensAsync(
         MultiplexReader input, Stream destination, WholeFileChecksum hasher, SumHeader sumHead,
         Stream? basis, CancellationToken cancellationToken, Action<long>? onBytesAdvanced)
     {
-        var runs = new List<byte[]>();
-        var currentRun = new List<byte>();
-        var ops = new List<ZlibxOp>();
+        using var inflater = new ZlibxTokenCodec.RunInflater();
+        byte[] buffer = new byte[RsyncConstants.ChunkSize];
+        long written = 0;
+        long matched = 0;
+        bool runOpen = false; // a DEFLATED_DATA payload has been fed since the last run boundary
         // Running block cursor for the relative token arithmetic: a token's start block is
         // previousBlock + delta, and previousBlock advances to the run's last block. rsync's encoder
         // initializes this cursor to 0 (capture-pinned by ssh31-pull-z-delta: block 0, then runs
         // 2..213 and 215..428 decode exactly under this rule).
         int previousBlock = 0;
 
-        void CloseRun()
+        // Writes out everything the inflater can produce from what it has been fed. Returns 0 (and
+        // stops) as soon as it needs input that has not arrived — mid-run that just means "come back
+        // after the next chunk"; after EndRun it means the run is complete.
+        async ValueTask<long> DrainAsync()
         {
-            if (currentRun.Count == 0)
-                return; // no DEFLATED_DATA since the last match/start: no literal op for this gap
-            ops.Add(new ZlibxOp(IsLiteral: true, RunIndex: runs.Count, BlockStart: 0, BlockCount: 0));
-            runs.Add(currentRun.ToArray());
-            currentRun.Clear();
+            long drained = 0;
+            while (true)
+            {
+                int read = inflater.Read(buffer);
+                if (read == 0)
+                    return drained;
+                hasher.Append(buffer.AsSpan(0, read));
+                await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+                onBytesAdvanced?.Invoke(read);
+                drained += read;
+            }
+        }
+
+        async ValueTask<long> CloseRunAsync()
+        {
+            if (!runOpen)
+                return 0; // no DEFLATED_DATA since the last match/start: this gap carries no run
+            runOpen = false;
+            inflater.EndRun();
+            return await DrainAsync();
         }
 
         while (true)
@@ -152,7 +173,7 @@ public static class FileReceiver
             byte flag = await input.ReadDataByteAsync(cancellationToken);
             if (flag == ZlibxTokenCodec.EndFlag)
             {
-                CloseRun();
+                written += await CloseRunAsync();
                 break;
             }
 
@@ -160,47 +181,18 @@ public static class FileReceiver
             {
                 int length = ((flag & 0x3F) << 8) | await input.ReadDataByteAsync(cancellationToken);
                 byte[] chunk = await input.ReadDataExactlyAsync(length, cancellationToken);
-                currentRun.AddRange(chunk);
+                inflater.Feed(chunk);
+                runOpen = true;
+                written += await DrainAsync();
                 continue;
             }
 
-            // A match token: close any pending literal run first, then record the block reference.
-            CloseRun();
+            // A match token: finish and write out the pending literal run first, then its blocks.
+            written += await CloseRunAsync();
             (int startBlock, int count) = await ReadMatchTokenAsync(flag, input, previousBlock, cancellationToken);
-            ops.Add(new ZlibxOp(IsLiteral: false, RunIndex: 0, BlockStart: startBlock, BlockCount: count));
+            for (int i = 0; i < count; i++)
+                matched += await CopyBasisBlockAsync(startBlock + i, sumHead, basis, destination, hasher, cancellationToken, onBytesAdvanced);
             previousBlock = startBlock + count - 1;
-        }
-
-        // Continuous inflation: cumulative[k] = total literal bytes of runs [0, k). The k == runs.Count
-        // pass yields the whole (correctly cross-referenced) literal buffer; earlier passes only need
-        // their length. For a full transfer there is exactly one run, so this is a single inflate.
-        int[] cumulative = new int[runs.Count + 1];
-        byte[] allLiterals = [];
-        for (int k = 1; k <= runs.Count; k++)
-        {
-            byte[] decoded = ZlibxTokenCodec.InflateRuns(runs, k);
-            cumulative[k] = decoded.Length;
-            if (k == runs.Count)
-                allLiterals = decoded;
-        }
-
-        long written = 0;
-        long matched = 0;
-        foreach (ZlibxOp op in ops)
-        {
-            if (op.IsLiteral)
-            {
-                ReadOnlyMemory<byte> slice = allLiterals.AsMemory(cumulative[op.RunIndex], cumulative[op.RunIndex + 1] - cumulative[op.RunIndex]);
-                hasher.Append(slice.Span);
-                await destination.WriteAsync(slice, cancellationToken);
-                onBytesAdvanced?.Invoke(slice.Length);
-                written += slice.Length;
-            }
-            else
-            {
-                for (int i = 0; i < op.BlockCount; i++)
-                    matched += await CopyBasisBlockAsync(op.BlockStart + i, sumHead, basis, destination, hasher, cancellationToken, onBytesAdvanced);
-            }
         }
 
         return (written, matched);
